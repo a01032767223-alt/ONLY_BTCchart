@@ -88,15 +88,22 @@
   .stat .k { font-size: 10px; color: var(--muted); }
   .stat .v { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
 
-  /* ── 시간봉 탭 ── */
-  nav {
+  /* ── 시간봉 탭 / 도구 모음 ── */
+  nav, #tools {
     display: flex;
     align-items: center;
     gap: 4px;
     padding: 8px 16px;
     border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    scrollbar-width: thin;
   }
-  nav button {
+  #tools { padding: 7px 16px; background: rgba(19,23,34,.5); }
+  #tools .grp-label {
+    font-size: 10px; color: var(--muted); font-weight: 700;
+    letter-spacing: .5px; margin-right: 2px; white-space: nowrap;
+  }
+  nav button, #tools button {
     background: none;
     border: 1px solid transparent;
     color: var(--muted);
@@ -106,26 +113,28 @@
     border-radius: 6px;
     cursor: pointer;
     font-family: inherit;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
-  nav button:hover { color: var(--text); background: var(--panel); }
+  nav button:hover, #tools button:hover { color: var(--text); background: var(--panel); }
   nav button.active {
     color: var(--btc);
     background: rgba(247,147,26,.1);
     border-color: rgba(247,147,26,.35);
   }
-  nav button:focus-visible { outline: 2px solid var(--btc); outline-offset: 1px; }
+  nav button:focus-visible, #tools button:focus-visible { outline: 2px solid var(--btc); outline-offset: 1px; }
 
-  .sep { width: 1px; height: 18px; background: var(--border); margin: 0 6px; flex-shrink: 0; }
-  nav button.toggle { font-size: 12px; }
-  nav button.toggle.on-sr { color: #22c55e; background: rgba(34,197,94,.08); border-color: rgba(34,197,94,.3); }
-  nav button.toggle.on-tr { color: #c084fc; background: rgba(192,132,252,.08); border-color: rgba(192,132,252,.3); }
+  .sep { width: 1px; height: 18px; background: var(--border); margin: 0 8px; flex-shrink: 0; }
+  .toggle { font-size: 12px; }
+  .toggle.on-sr { color: #22c55e; background: rgba(34,197,94,.08); border-color: rgba(34,197,94,.3); }
+  .toggle.on-tr { color: #f59e0b; background: rgba(245,158,11,.08); border-color: rgba(245,158,11,.3); }
 
   #sr-info { display: flex; gap: 14px; flex-wrap: wrap; }
   #sr-info .sup { color: #22c55e; font-family: var(--mono); font-variant-numeric: tabular-nums; }
   #sr-info .res { color: #f59e0b; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
-  nav button.toggle.on-draw { color: #c084fc; background: rgba(192,132,252,.12); border-color: rgba(192,132,252,.4); }
-  nav button.toggle.on-ai { color: var(--btc); }
+  .toggle.on-draw { color: #c084fc; background: rgba(192,132,252,.15); border-color: rgba(192,132,252,.5); }
+  .toggle.on-ai { color: var(--btc); border-color: rgba(247,147,26,.35); background: rgba(247,147,26,.08); }
   #draw-hint {
     position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
     font-size: 12px; color: #c084fc; z-index: 5; pointer-events: none;
@@ -177,6 +186,21 @@
   /* ── 차트 ── */
   #chart-wrap { flex: 1; position: relative; min-height: 0; }
   #chart { position: absolute; inset: 0; }
+  #handles {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    z-index: 3;
+    overflow: visible;
+  }
+  #handles .handle {
+    pointer-events: auto;
+    cursor: grab;
+    fill: #131722;
+    stroke: #c084fc;
+    stroke-width: 2.5;
+  }
+  #handles .handle:hover { fill: #c084fc; r: 7; }
+  #handles .handle:active { cursor: grabbing; }
   #banner {
     position: absolute;
     top: 12px; left: 50%;
@@ -213,7 +237,7 @@
   @media (max-width: 560px) {
     .stats { display: none; }
     #price { font-size: 21px; }
-    nav { overflow-x: auto; }
+    nav button, #tools button { padding: 5px 9px; font-size: 12px; }
   }
 </style>
 </head>
@@ -239,9 +263,11 @@
 </header>
 
 <nav id="tabs" aria-label="시간봉 선택"></nav>
+<div id="tools" aria-label="분석 및 그리기 도구"></div>
 
 <div id="chart-wrap">
   <div id="chart"></div>
+  <svg id="handles"></svg>
   <div id="loading">차트 데이터를 불러오는 중…</div>
   <div id="banner"></div>
   <div id="draw-hint"></div>
@@ -430,6 +456,7 @@
   function runAnalysis() {
     clearAnalysis();
     const bars = [...barMap.values()].sort((a, b) => a.time - b.time);
+    barsArr = bars;   // 자석 스냅 계산에 사용
     const price = lastPrice ?? (bars.length ? bars[bars.length - 1].close : 0);
     if (bars.length < 15 || !price) { updateSRFooter(null, null, price); return; }
 
@@ -510,9 +537,11 @@
     b.addEventListener("click", () => switchTimeframe(tf));
     nav.appendChild(b);
   });
-  const sep = document.createElement("div");
-  sep.className = "sep";
-  nav.appendChild(sep);
+  const tools = $("tools");
+  const lblAuto = document.createElement("span");
+  lblAuto.className = "grp-label";
+  lblAuto.textContent = "자동 분석";
+  tools.appendChild(lblAuto);
 
   const btnSR = document.createElement("button");
   btnSR.className = "toggle on-sr";
@@ -524,7 +553,7 @@
     btnSR.setAttribute("aria-pressed", String(showSR));
     runAnalysis();
   });
-  nav.appendChild(btnSR);
+  tools.appendChild(btnSR);
 
   const btnTR = document.createElement("button");
   btnTR.className = "toggle on-tr";
@@ -536,17 +565,27 @@
     btnTR.setAttribute("aria-pressed", String(showTrend));
     runAnalysis();
   });
-  nav.appendChild(btnTR);
+  tools.appendChild(btnTR);
 
-  // ── 사용자 그리기 도구 ──
+  // ── 사용자 그리기 도구 (캔들 자석 스냅 + 끝점 드래그 편집) ──
   let drawMode = null;             // null | 'trend' | 'horiz'
   let pending = null;              // 추세선 첫 클릭 지점
   let userLines = [];              // 사용자 수평선 (priceLine)
-  let userSeries = [];             // 사용자 추세선 (line series)
+  let userTrends = [];             // {p1, p2, series} 사용자 추세선
+  let barsArr = [];                // 현재 시간봉의 정렬된 캔들 (스냅 계산용)
+  let magnet = true;               // 캔들 자석 on/off
+  let extendMode = false;          // 오른쪽 끝까지 연장
+  let dragging = null;             // {trend, which}
+  let previewSeries = null;
+  const SNAP_PX = 14;              // 자석이 붙는 거리(픽셀)
 
   const sep2 = document.createElement("div");
   sep2.className = "sep";
-  nav.appendChild(sep2);
+  tools.appendChild(sep2);
+  const lblDraw = document.createElement("span");
+  lblDraw.className = "grp-label";
+  lblDraw.textContent = "직접 그리기";
+  tools.appendChild(lblDraw);
 
   function makeDrawBtn(label, mode) {
     const b = document.createElement("button");
@@ -555,81 +594,218 @@
     b.addEventListener("click", () => {
       drawMode = drawMode === mode ? null : mode;
       pending = null;
+      clearPreview();
       btnDrawT.classList.toggle("on-draw", drawMode === "trend");
       btnDrawH.classList.toggle("on-draw", drawMode === "horiz");
-      $("chart-wrap").style.cursor = drawMode ? "crosshair" : "";
+      $("chart").style.cursor = drawMode ? "crosshair" : "";
       setDrawHint();
     });
     return b;
   }
   const btnDrawT = makeDrawBtn("✏ 추세선", "trend");
   const btnDrawH = makeDrawBtn("─ 수평선", "horiz");
+
+  const btnMagnet = document.createElement("button");
+  btnMagnet.className = "toggle on-draw";
+  btnMagnet.textContent = "🧲 자석";
+  btnMagnet.title = "캔들 고가·저가(꼬리)에 자동으로 붙습니다";
+  btnMagnet.setAttribute("aria-pressed", "true");
+  btnMagnet.addEventListener("click", () => {
+    magnet = !magnet;
+    btnMagnet.classList.toggle("on-draw", magnet);
+    btnMagnet.setAttribute("aria-pressed", String(magnet));
+  });
+
+  const btnExtend = document.createElement("button");
+  btnExtend.className = "toggle";
+  btnExtend.textContent = "↔ 연장";
+  btnExtend.title = "그은 추세선을 차트 오른쪽 끝까지 늘립니다";
+  btnExtend.setAttribute("aria-pressed", "false");
+  btnExtend.addEventListener("click", () => {
+    extendMode = !extendMode;
+    btnExtend.classList.toggle("on-draw", extendMode);
+    btnExtend.setAttribute("aria-pressed", String(extendMode));
+    userTrends.forEach(renderTrend);
+    drawHandles();
+  });
+
   const btnErase = document.createElement("button");
   btnErase.className = "toggle";
   btnErase.textContent = "지우기";
   btnErase.addEventListener("click", clearUserLines);
-  nav.appendChild(btnDrawT);
-  nav.appendChild(btnDrawH);
-  nav.appendChild(btnErase);
 
+  tools.appendChild(btnDrawT);
+  tools.appendChild(btnDrawH);
+  tools.appendChild(btnMagnet);
+  tools.appendChild(btnExtend);
+  tools.appendChild(btnErase);
+
+  // ── 스냅: 커서 위치를 가장 가까운 캔들의 고가/저가/시가/종가에 붙임 ──
+  function snapAt(x, y) {
+    if (!barsArr.length) return null;
+    const logical = chart.timeScale().coordinateToLogical(x);
+    if (logical == null) return null;
+    const idx = Math.max(0, Math.min(barsArr.length - 1, Math.round(logical)));
+    const bar = barsArr[idx];
+    const raw = candles.coordinateToPrice(y);
+    if (raw == null) return null;
+    if (!magnet) return { time: bar.time, idx, price: raw, snapped: false };
+
+    let best = null, bestD = Infinity;
+    for (const p of [bar.high, bar.low, bar.open, bar.close]) {
+      const cy = candles.priceToCoordinate(p);
+      if (cy == null) continue;
+      const d = Math.abs(cy - y);
+      if (d < bestD) { bestD = d; best = p; }
+    }
+    const ok = best != null && bestD <= SNAP_PX;
+    return { time: bar.time, idx, price: ok ? best : raw, snapped: ok };
+  }
+
+  function trendData(t) {
+    const a = t.p1.time <= t.p2.time ? t.p1 : t.p2;
+    const b = t.p1.time <= t.p2.time ? t.p2 : t.p1;
+    if (!extendMode || b.idx === a.idx) {
+      return [{ time: a.time, value: a.price }, { time: b.time, value: b.price }];
+    }
+    // 기울기를 유지한 채 마지막 봉까지 연장
+    const slope = (b.price - a.price) / (b.idx - a.idx);
+    const lastIdx = barsArr.length - 1;
+    const end = b.price + slope * (lastIdx - b.idx);
+    if (end <= 0 || lastIdx <= b.idx) {
+      return [{ time: a.time, value: a.price }, { time: b.time, value: b.price }];
+    }
+    return [{ time: a.time, value: a.price }, { time: barsArr[lastIdx].time, value: end }];
+  }
+  function renderTrend(t) {
+    try { t.series.setData(trendData(t)); } catch {}
+  }
+
+  function clearPreview() {
+    if (previewSeries) { try { chart.removeSeries(previewSeries); } catch {} previewSeries = null; }
+  }
   function clearUserLines() {
     userLines.forEach(l => { try { candles.removePriceLine(l); } catch {} });
     userLines = [];
-    userSeries.forEach(s => { try { chart.removeSeries(s); } catch {} });
-    userSeries = [];
+    userTrends.forEach(t => { try { chart.removeSeries(t.series); } catch {} });
+    userTrends = [];
     pending = null;
+    clearPreview();
+    drawHandles();
     setDrawHint();
   }
   function setDrawHint() {
     const el = $("draw-hint");
     if (drawMode === "trend") el.textContent = pending ? "끝점을 클릭하세요" : "시작점을 클릭하세요";
     else if (drawMode === "horiz") el.textContent = "가격 위치를 클릭하세요";
+    else if (userTrends.length) el.textContent = "끝점(●)을 끌어 길이·각도를 조절하세요";
     else el.textContent = "";
   }
 
+  // ── 끝점 핸들 오버레이 ──
+  const svg = document.getElementById("handles");
+  function drawHandles() {
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    if (!userTrends.length) return;
+    const ts = chart.timeScale();
+    for (const t of userTrends) {
+      for (const which of ["p1", "p2"]) {
+        const p = t[which];
+        const x = ts.timeToCoordinate(p.time);
+        const y = candles.priceToCoordinate(p.price);
+        if (x == null || y == null) continue;
+        const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", 6);
+        c.setAttribute("class", "handle");
+        c.addEventListener("pointerdown", ev => {
+          ev.preventDefault(); ev.stopPropagation();
+          dragging = { trend: t, which };
+          chart.applyOptions({ handleScroll: false, handleScale: false });
+          $("draw-hint").textContent = "끌어서 이동 중… 놓으면 고정됩니다";
+        });
+        svg.appendChild(c);
+      }
+    }
+  }
+
+  const chartEl = $("chart");
+  chartEl.addEventListener("pointermove", ev => {
+    if (!dragging) return;
+    const r = chartEl.getBoundingClientRect();
+    const pt = snapAt(ev.clientX - r.left, ev.clientY - r.top);
+    if (!pt) return;
+    dragging.trend[dragging.which] = pt;
+    renderTrend(dragging.trend);
+    drawHandles();
+  });
+  window.addEventListener("pointerup", () => {
+    if (!dragging) return;
+    dragging = null;
+    chart.applyOptions({ handleScroll: true, handleScale: true });
+    setDrawHint();
+  });
+
+  // 차트를 움직이거나 확대하면 핸들 위치도 따라가도록
+  chart.timeScale().subscribeVisibleLogicalRangeChange(() => drawHandles());
+
+  // ── 그리는 중 미리보기 ──
+  chart.subscribeCrosshairMove(param => {
+    if (drawMode !== "trend" || !pending || !param.point) { return; }
+    const pt = snapAt(param.point.x, param.point.y);
+    if (!pt) return;
+    if (!previewSeries) {
+      previewSeries = chart.addLineSeries({
+        color: "rgba(192,132,252,.6)", lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dotted,
+        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      });
+    }
+    if (pt.time === pending.time) return;
+    const pts = [pending, pt].sort((a, b) => a.time - b.time)
+      .map(p => ({ time: p.time, value: p.price }));
+    try { previewSeries.setData(pts); } catch {}
+  });
+
   chart.subscribeClick(param => {
     if (!drawMode || !param.point) return;
-    const price = candles.coordinateToPrice(param.point.y);
-    if (price == null || !param.time) return;
+    const pt = snapAt(param.point.x, param.point.y);
+    if (!pt) return;
 
     if (drawMode === "horiz") {
       userLines.push(candles.createPriceLine({
-        price, color: "#c084fc", lineWidth: 2,
+        price: pt.price, color: "#c084fc", lineWidth: 2,
         lineStyle: LightweightCharts.LineStyle.Solid,
         axisLabelVisible: true, title: "내 라인",
       }));
       return;
     }
-    // 추세선: 두 번 클릭으로 완성
-    if (!pending) {
-      pending = { time: param.time, price };
-      setDrawHint();
-      return;
-    }
-    if (pending.time === param.time) return;   // 같은 봉 두 번 클릭 방지
-    const pts = [pending, { time: param.time, price }]
-      .sort((a, b) => a.time - b.time)
-      .map(p => ({ time: p.time, value: p.price }));
+    if (!pending) { pending = pt; setDrawHint(); return; }
+    if (pt.time === pending.time) return;   // 같은 봉 두 번 클릭 방지
+
     const s = chart.addLineSeries({
       color: "#c084fc", lineWidth: 2,
       priceLineVisible: false, lastValueVisible: false,
       crosshairMarkerVisible: false,
     });
-    s.setData(pts);
-    userSeries.push(s);
+    const t = { p1: pending, p2: pt, series: s };
+    renderTrend(t);
+    userTrends.push(t);
     pending = null;
+    clearPreview();
+    drawHandles();
     setDrawHint();
   });
 
   // ── AI 해설 ──
   const sep3 = document.createElement("div");
   sep3.className = "sep";
-  nav.appendChild(sep3);
+  sep3.style.marginLeft = "auto";
+  tools.appendChild(sep3);
   const btnAI = document.createElement("button");
   btnAI.className = "toggle on-ai";
   btnAI.textContent = "AI 해설";
   btnAI.addEventListener("click", showCommentary);
-  nav.appendChild(btnAI);
+  tools.appendChild(btnAI);
 
   function fmtSlope(t) {
     return t.slope > 0 ? "우상향" : "우하향";
