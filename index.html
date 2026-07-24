@@ -49,8 +49,11 @@
   header {
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 12px 16px 10px;
+    gap: 12px 16px;
+    padding: calc(12px + env(safe-area-inset-top, 0px))
+             calc(16px + env(safe-area-inset-right, 0px))
+             10px
+             calc(16px + env(safe-area-inset-left, 0px));
     border-bottom: 1px solid var(--border);
     flex-wrap: wrap;
   }
@@ -255,13 +258,17 @@
   }
 
   footer {
-    padding: 6px 16px;
+    padding: 6px
+             calc(16px + env(safe-area-inset-right, 0px))
+             calc(6px + env(safe-area-inset-bottom, 0px))
+             calc(16px + env(safe-area-inset-left, 0px));
     border-top: 1px solid var(--border);
     font-size: 11px;
     color: var(--muted);
     display: flex;
     justify-content: space-between;
     gap: 12px;
+    flex-wrap: wrap;
   }
   #last-update { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
@@ -526,21 +533,27 @@
     let nearestSup = null, nearestRes = null;
 
     // ① 지지/저항 수평선 — 현재가 아래(지지)와 위(저항)를 각각 따로 선정해 균형 유지
-    // 다중 접촉(×2↑) 레벨을 우선하되, 급등·급락 구간처럼 한 번만 찍힌 주요 스윙밖에
-    // 없는 쪽은 단일 스윙 레벨로 보충한다 (저항이 통째로 사라지는 문제 방지)
+    // 선정 기준: "현재가에서 가까운 순" (매매 판단에는 근접 레벨이 우선).
+    // 터치 횟수는 선정이 아니라 선의 굵기(중요도 표시)에 반영한다.
+    // 단, 해당 방향의 최다 터치 매물대(×4↑)는 멀어도 마지막 자리에 반드시 포함.
     if (showSR) {
       const clusters = clusterLevels([...highs, ...lows], tol);
       const pickLevels = isSup => {
-        const side = clusters.filter(l => isSup ? l.price <= price : l.price > price);
-        const multi = side.filter(l => l.touches >= 2)
-          .sort((a, b) => b.touches - a.touches || (isSup ? b.price - a.price : a.price - b.price))
-          .slice(0, 4);
-        if (multi.length >= 3) return multi;
-        const used = new Set(multi.map(l => l.price));
-        const singles = side.filter(l => l.touches === 1 && !used.has(l.price))
-          .sort((a, b) => isSup ? b.price - a.price : a.price - b.price)  // 현재가에 가까운 순
-          .slice(0, 3 - multi.length);
-        return [...multi, ...singles];
+        const side = clusters.filter(l => isSup ? l.price <= price : l.price > price)
+          .sort((a, b) => Math.abs(a.price - price) - Math.abs(b.price - price));
+        const out = [];
+        for (const lv of side) {
+          if (out.length >= 4) break;
+          // 단일 접촉 스윙은 가까운 2자리까지만 허용 (먼 우연 스윙 배제)
+          if (lv.touches < 2 && out.length >= 2) continue;
+          out.push(lv);
+        }
+        const strongest = side.reduce((m, l) => !m || l.touches > m.touches ? l : m, null);
+        if (strongest && strongest.touches >= 4 && !out.includes(strongest)) {
+          if (out.length >= 4) out.pop();
+          out.push(strongest);
+        }
+        return out;
       };
       for (const lv of [...pickLevels(true), ...pickLevels(false)]) {
         const isSup = lv.price <= price;
@@ -575,6 +588,8 @@
         const lastIdx = win.length - 1;
         const endPrice = tl.p1.price + tl.slope * (lastIdx - tl.p1.i);
         if (endPrice <= 0) continue;
+        // 유효성: 선의 현재 위치가 현재가에서 15% 이상 벗어나면 이미 무의미해진 추세로 보고 제외
+        if (Math.abs(endPrice - price) / price > 0.15) continue;
         const s = chart.addLineSeries({
           color,
           lineWidth: tl.touches >= 4 ? 3 : tl.touches >= 3 ? 2 : 1,  // 터치 횟수에 따른 굵기
