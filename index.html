@@ -453,8 +453,11 @@
     return clusters.map(c => ({ price: c.avg, touches: c.points.length }));
   }
 
-  // 스윙 포인트 쌍을 이어 보고, "캔들을 관통하지 않으면서" 접촉이 많은 조합을 최적 추세선으로 선택
-  // bars: 검증에 사용할 전체 캔들 (선이 마지막 봉까지 연장되므로 시작점~끝까지 전 구간을 검사)
+  // 스윙 포인트 쌍을 이어 최적 추세선 선택.
+  // 투자 관점 반영: [형성 구간(p1~p2)]은 캔들 관통 금지를 엄격 적용하되,
+  // [연장 구간(p2~현재)]의 돌파는 허용한다 — 하락 추세선 상향 돌파(또는 상승 추세선 하향 이탈)는
+  // 선을 지울 이유가 아니라 지지↔저항 역할 전환 신호이기 때문. 단, 연장 구간의 40% 넘게
+  // 반대편에 머문 선은 이미 낡은 추세로 보고 제외한다.
   function bestTrendline(pivots, bars, type, tolPct) {
     if (pivots.length < 2) return null;
     let best = null;
@@ -465,21 +468,37 @@
         if (p2.i - p1.i < 3) continue;               // 너무 붙은 두 점은 기울기가 불안정
         const slope = (p2.price - p1.price) / (p2.i - p1.i);
 
-        // 검증 1: 시작점부터 차트 끝까지 캔들 관통 금지
-        // (지지선 아래로 저가가 뚫거나, 저항선 위로 고가가 뚫으면 탈락. 미세한 꼬리 이탈 1회만 허용)
+        // 검증 1: 형성 구간 관통 금지
+        // (꼬리가 살짝 스치는 것(2% 이내)은 구간 길이의 15%까지 허용 — 긴 추세선일수록 자연스러운 현상)
         let pierce = 0, ok = true;
-        for (let i = p1.i; i <= lastIdx; i++) {
+        const span = p2.i - p1.i;
+        const pierceAllow = Math.max(1, Math.round(span * 0.15));
+        for (let i = p1.i; i <= p2.i; i++) {
           const lv = p1.price + slope * (i - p1.i);
           if (lv <= 0) { ok = false; break; }
           const over = type === "sup"
-            ? (lv - bars[i].low) / lv               // 지지선 아래로 뚫린 깊이
-            : (bars[i].high - lv) / lv;             // 저항선 위로 뚫린 깊이
-          if (over > tolPct * 2) { ok = false; break; }   // 명백한 관통 → 즉시 탈락
-          if (over > tolPct * 0.6) pierce++;              // 꼬리가 살짝 넘는 정도
+            ? (lv - bars[i].low) / lv
+            : (bars[i].high - lv) / lv;
+          if (over > tolPct * 2) { ok = false; break; }
+          if (over > tolPct * 0.6) pierce++;
         }
-        if (!ok || pierce > 1) continue;
+        if (!ok || pierce > pierceAllow) continue;
 
-        // 검증 2: 스윙 포인트 접촉 수 (선 근처 tol 이내)
+        // 검증 2: 연장 구간 돌파 비율 (절반 초과 시 낡은 추세로 제외 — 최근 돌파는 유지)
+        let extBreak = 0;
+        const extLen = lastIdx - p2.i;
+        for (let i = p2.i + 1; i <= lastIdx; i++) {
+          const lv = p1.price + slope * (i - p1.i);
+          if (lv <= 0) { ok = false; break; }
+          const over = type === "sup"
+            ? (lv - bars[i].low) / lv
+            : (bars[i].high - lv) / lv;
+          if (over > tolPct * 2) extBreak++;
+        }
+        if (!ok) continue;
+        if (extLen > 0 && extBreak / extLen > 0.5) continue;
+
+        // 검증 3: 스윙 포인트 접촉 수
         let touches = 0;
         for (const q of pivots) {
           const lv = p1.price + slope * (q.i - p1.i);
@@ -487,9 +506,10 @@
         }
         if (touches < 2) continue;
 
-        // 점수: 접촉 3회 이상 강하게 우대 + 두 점 사이가 넓을수록(기울기 안정) 가산
-        const score = touches * 10 + (touches >= 3 ? 25 : 0) + (p2.i - p1.i) * 0.1;
-        if (!best || score > best.score) best = { p1, p2, slope, touches, score };
+        // 점수: 접촉 3회↑ 우대 + 넓은 간격 가산 + 아직 유효한(미돌파) 선 우대
+        const score = touches * 10 + (touches >= 3 ? 25 : 0)
+          + span * 0.1 + (extBreak === 0 ? 15 : 0);
+        if (!best || score > best.score) best = { p1, p2, slope, touches, score, broken: extBreak > 0 };
       }
     }
     return best;
@@ -583,13 +603,20 @@
         { tl: bestTrendline(wl, win, "sup", tol), color: "#22c55e", kind: "지지 추세선" },
         { tl: bestTrendline(wh, win, "res", tol), color: "#f59e0b", kind: "저항 추세선" },
       ];
+      const EXT = 12;   // 앞으로 12봉까지 연장 — 향후 지지/저항 예상 경로 표시
+      const step = win.length > 1 ? win[win.length - 1].time - win[win.length - 2].time : 0;
       for (const { tl, color, kind } of lines) {
         if (!tl) continue;
         const lastIdx = win.length - 1;
-        const endPrice = tl.p1.price + tl.slope * (lastIdx - tl.p1.i);
-        if (endPrice <= 0) continue;
+        const endNow = tl.p1.price + tl.slope * (lastIdx - tl.p1.i);
+        if (endNow <= 0) continue;
         // 유효성: 선의 현재 위치가 현재가에서 15% 이상 벗어나면 이미 무의미해진 추세로 보고 제외
-        if (Math.abs(endPrice - price) / price > 0.15) continue;
+        if (Math.abs(endNow - price) / price > 0.15) continue;
+        // 미래 연장 지점 계산 (연장 불가 시 현재 봉까지만)
+        const futPrice = tl.p1.price + tl.slope * (lastIdx + EXT - tl.p1.i);
+        const canExt = step > 0 && futPrice > 0;
+        const endTime = canExt ? win[lastIdx].time + step * EXT : win[lastIdx].time;
+        const endVal = canExt ? futPrice : endNow;
         const s = chart.addLineSeries({
           color,
           lineWidth: tl.touches >= 4 ? 3 : tl.touches >= 3 ? 2 : 1,  // 터치 횟수에 따른 굵기
@@ -599,10 +626,11 @@
         });
         s.setData([
           { time: tl.p1.time, value: tl.p1.price },
-          { time: win[lastIdx].time, value: endPrice },
+          { time: endTime, value: endVal },
         ]);
         trendSeries.push(s);
-        trendInfo.push({ kind, slope: tl.slope, touches: tl.touches, endPrice });
+        trendInfo.push({ kind, slope: tl.slope, touches: tl.touches,
+          endPrice: endNow, broken: !!tl.broken });
       }
     }
 
@@ -790,14 +818,18 @@
     if (!extendMode || bi === ai || !barsArr.length) {
       return [{ time: a.time, value: a.price }, { time: b.time, value: b.price }];
     }
-    // 기울기를 유지한 채 마지막 봉까지 연장
+    // 기울기를 유지한 채 마지막 봉을 지나 미래 12봉까지 연장
     const slope = (b.price - a.price) / (bi - ai);
     const lastIdx = barsArr.length - 1;
-    const end = b.price + slope * (lastIdx - bi);
-    if (end <= 0 || lastIdx <= bi) {
+    const step = lastIdx > 0 ? barsArr[lastIdx].time - barsArr[lastIdx - 1].time : 0;
+    const EXT = 12;
+    const futIdx = lastIdx + (step > 0 ? EXT : 0);
+    const end = b.price + slope * (futIdx - bi);
+    if (end <= 0 || futIdx <= bi) {
       return [{ time: a.time, value: a.price }, { time: b.time, value: b.price }];
     }
-    return [{ time: a.time, value: a.price }, { time: barsArr[lastIdx].time, value: end }];
+    const endTime = barsArr[lastIdx].time + (step > 0 ? step * EXT : 0);
+    return [{ time: a.time, value: a.price }, { time: endTime, value: end }];
   }
   function renderTrend(t) {
     try { t.series.setData(trendData(t)); } catch {}
