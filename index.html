@@ -334,13 +334,14 @@
   let wsIdx = 0;
 
   // 시간봉 정의 (연봉은 월봉을 클라이언트에서 집계)
+  // width: 스윙 판정에 필요한 좌우 봉 수, tol: 레벨 클러스터 허용폭 (시간봉 변동성에 맞춤)
   const TIMEFRAMES = [
-    { key: "1h", label: "1시간", interval: "1h", limit: 500, intraday: true },
-    { key: "4h", label: "4시간", interval: "4h", limit: 500, intraday: true },
-    { key: "1d", label: "일봉",  interval: "1d", limit: 730, intraday: false },
-    { key: "1w", label: "주봉",  interval: "1w", limit: 520, intraday: false },
-    { key: "1M", label: "월봉",  interval: "1M", limit: 200, intraday: false },
-    { key: "1y", label: "연봉",  interval: "1M", limit: 1000, intraday: false, aggregateYear: true },
+    { key: "1h", label: "1시간", interval: "1h", limit: 500, intraday: true,  width: 5, tol: 0.004 },
+    { key: "4h", label: "4시간", interval: "4h", limit: 500, intraday: true,  width: 5, tol: 0.006 },
+    { key: "1d", label: "일봉",  interval: "1d", limit: 730, intraday: false, width: 4, tol: 0.010 },
+    { key: "1w", label: "주봉",  interval: "1w", limit: 520, intraday: false, width: 3, tol: 0.014 },
+    { key: "1M", label: "월봉",  interval: "1M", limit: 200, intraday: false, width: 2, tol: 0.018 },
+    { key: "1y", label: "연봉",  interval: "1M", limit: 1000, intraday: false, width: 1, tol: 0.025, aggregateYear: true },
   ];
 
   const $ = id => document.getElementById(id);
@@ -516,27 +517,36 @@
     const price = lastPrice ?? (bars.length ? bars[bars.length - 1].close : 0);
     if (bars.length < 15 || !price) { updateSRFooter(null, null, price); return; }
 
-    const width = current.aggregateYear ? 1 : (current.intraday ? 5 : 3);
-    const tol = current.intraday ? 0.005 : 0.012;   // 클러스터 허용폭
-    const lookback = bars.slice(-300);
+    const width = current.width;
+    const tol = current.tol;
+    // 차트에 보이는 전체 구간을 분석 (기존 300봉 제한 → 화면 밖 상단 구조가 누락되던 문제 해결)
+    const lookback = bars.slice(-800);
     const { highs, lows } = detectPivots(lookback, width);
 
     let nearestSup = null, nearestRes = null;
 
     // ① 지지/저항 수평선 — 현재가 아래(지지)와 위(저항)를 각각 따로 선정해 균형 유지
+    // 다중 접촉(×2↑) 레벨을 우선하되, 급등·급락 구간처럼 한 번만 찍힌 주요 스윙밖에
+    // 없는 쪽은 단일 스윙 레벨로 보충한다 (저항이 통째로 사라지는 문제 방지)
     if (showSR) {
-      const all = clusterLevels([...highs, ...lows], tol).filter(l => l.touches >= 2);
-      const sups = all.filter(l => l.price <= price)
-        .sort((a, b) => b.touches - a.touches || b.price - a.price)   // 터치 우선, 동률이면 현재가에 가까운 순
-        .slice(0, 4);
-      const resis = all.filter(l => l.price > price)
-        .sort((a, b) => b.touches - a.touches || a.price - b.price)
-        .slice(0, 4);
-      for (const lv of [...sups, ...resis]) {
+      const clusters = clusterLevels([...highs, ...lows], tol);
+      const pickLevels = isSup => {
+        const side = clusters.filter(l => isSup ? l.price <= price : l.price > price);
+        const multi = side.filter(l => l.touches >= 2)
+          .sort((a, b) => b.touches - a.touches || (isSup ? b.price - a.price : a.price - b.price))
+          .slice(0, 4);
+        if (multi.length >= 3) return multi;
+        const used = new Set(multi.map(l => l.price));
+        const singles = side.filter(l => l.touches === 1 && !used.has(l.price))
+          .sort((a, b) => isSup ? b.price - a.price : a.price - b.price)  // 현재가에 가까운 순
+          .slice(0, 3 - multi.length);
+        return [...multi, ...singles];
+      };
+      for (const lv of [...pickLevels(true), ...pickLevels(false)]) {
         const isSup = lv.price <= price;
-        // 중요도(터치 횟수) 3단계: 5회↑ 굵게(3px), 3~4회 보통(2px), 2회 얇은 점선(1px)
+        // 중요도(터치 횟수) 4단계: 5회↑ 3px, 3~4회 2px, 2회 1px 점선, 1회(스윙 보충) 얇은 점선·흐림
         const w = lv.touches >= 5 ? 3 : lv.touches >= 3 ? 2 : 1;
-        const alpha = lv.touches >= 5 ? 0.95 : lv.touches >= 3 ? 0.75 : 0.4;
+        const alpha = lv.touches >= 5 ? 0.95 : lv.touches >= 3 ? 0.75 : lv.touches >= 2 ? 0.4 : 0.3;
         priceLines.push(candles.createPriceLine({
           price: lv.price,
           color: isSup ? `rgba(34,197,94,${alpha})` : `rgba(245,158,11,${alpha})`,
