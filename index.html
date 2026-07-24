@@ -124,6 +124,39 @@
   #sr-info .sup { color: #22c55e; font-family: var(--mono); font-variant-numeric: tabular-nums; }
   #sr-info .res { color: #f59e0b; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
+  nav button.toggle.on-draw { color: #c084fc; background: rgba(192,132,252,.12); border-color: rgba(192,132,252,.4); }
+  nav button.toggle.on-ai { color: var(--btc); }
+  #draw-hint {
+    position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    font-size: 12px; color: #c084fc; z-index: 5; pointer-events: none;
+    background: rgba(19,23,34,.85); padding: 4px 12px; border-radius: 6px;
+  }
+  #draw-hint:empty { display: none; }
+
+  #ai-panel {
+    display: none;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    max-height: 32vh;
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+  #ai-head {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 16px 0;
+  }
+  #ai-src { font-size: 11px; color: var(--btc); font-weight: 700; }
+  #ai-close {
+    background: none; border: none; color: var(--muted);
+    font-size: 14px; cursor: pointer; padding: 2px 6px;
+  }
+  #ai-close:hover { color: var(--text); }
+  #ai-body {
+    padding: 8px 16px 12px;
+    font-size: 13px; line-height: 1.7; color: var(--text);
+    white-space: pre-wrap;
+  }
+
   .conn {
     margin-left: auto;
     display: flex; align-items: center; gap: 6px;
@@ -211,6 +244,15 @@
   <div id="chart"></div>
   <div id="loading">차트 데이터를 불러오는 중…</div>
   <div id="banner"></div>
+  <div id="draw-hint"></div>
+</div>
+
+<div id="ai-panel">
+  <div id="ai-head">
+    <span id="ai-src">AI 해설</span>
+    <button id="ai-close" aria-label="해설 닫기">✕</button>
+  </div>
+  <div id="ai-body"></div>
 </div>
 
 <footer>
@@ -302,6 +344,7 @@
   let barMap = new Map();        // time(sec) -> candle (연봉 집계용은 year -> candle)
   let loadSeq = 0;
   let showSR = true, showTrend = true;
+  let lastAnalysis = null;
   let priceLines = [];
   let trendSeries = [];
 
@@ -405,15 +448,15 @@
         .slice(0, 8);
       for (const lv of levels) {
         const isSup = lv.price <= price;
-        const strong = lv.touches >= 3;
+        // 중요도(터치 횟수) 3단계: 5회↑ 굵게(3px), 3~4회 보통(2px), 2회 얇은 점선(1px)
+        const w = lv.touches >= 5 ? 3 : lv.touches >= 3 ? 2 : 1;
+        const alpha = lv.touches >= 5 ? 0.95 : lv.touches >= 3 ? 0.75 : 0.4;
         priceLines.push(candles.createPriceLine({
           price: lv.price,
-          color: isSup
-            ? `rgba(34,197,94,${strong ? 0.85 : 0.45})`
-            : `rgba(245,158,11,${strong ? 0.85 : 0.45})`,
-          lineWidth: strong ? 2 : 1,
-          lineStyle: strong ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
-          axisLabelVisible: strong,
+          color: isSup ? `rgba(34,197,94,${alpha})` : `rgba(245,158,11,${alpha})`,
+          lineWidth: w,
+          lineStyle: w > 1 ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: w > 1,
           title: `${isSup ? "지지" : "저항"} ×${lv.touches}`,
         }));
         if (isSup && (!nearestSup || lv.price > nearestSup.price)) nearestSup = lv;
@@ -423,20 +466,22 @@
     updateSRFooter(nearestSup, nearestRes, price);
 
     // ② 추세선 (스윙 저점 연결 = 상승 지지 추세선, 스윙 고점 연결 = 하락 저항 추세선)
+    const trendInfo = [];
     if (showTrend && !current.aggregateYear) {
       const win = lookback.slice(-160);
       const { highs: wh, lows: wl } = detectPivots(win, width);
       const lines = [
-        { tl: bestTrendline(wl, "sup", tol), color: "#22c55e" },
-        { tl: bestTrendline(wh, "res", tol), color: "#f59e0b" },
+        { tl: bestTrendline(wl, "sup", tol), color: "#22c55e", kind: "지지 추세선" },
+        { tl: bestTrendline(wh, "res", tol), color: "#f59e0b", kind: "저항 추세선" },
       ];
-      for (const { tl, color } of lines) {
+      for (const { tl, color, kind } of lines) {
         if (!tl) continue;
         const lastIdx = win.length - 1;
         const endPrice = tl.p1.price + tl.slope * (lastIdx - tl.p1.i);
         if (endPrice <= 0) continue;
         const s = chart.addLineSeries({
-          color, lineWidth: 2,
+          color,
+          lineWidth: tl.touches >= 4 ? 3 : tl.touches >= 3 ? 2 : 1,  // 터치 횟수에 따른 굵기
           lineStyle: LightweightCharts.LineStyle.Dashed,
           priceLineVisible: false, lastValueVisible: false,
           crosshairMarkerVisible: false,
@@ -446,8 +491,13 @@
           { time: win[lastIdx].time, value: endPrice },
         ]);
         trendSeries.push(s);
+        trendInfo.push({ kind, slope: tl.slope, touches: tl.touches, endPrice });
       }
     }
+
+    // AI 해설용 최근 분석 결과 저장
+    lastAnalysis = { price, sup: nearestSup, res: nearestRes, trends: trendInfo,
+      bars: bars.slice(-30) };
   }
 
   // ── 탭 렌더링 ──
@@ -487,6 +537,172 @@
     runAnalysis();
   });
   nav.appendChild(btnTR);
+
+  // ── 사용자 그리기 도구 ──
+  let drawMode = null;             // null | 'trend' | 'horiz'
+  let pending = null;              // 추세선 첫 클릭 지점
+  let userLines = [];              // 사용자 수평선 (priceLine)
+  let userSeries = [];             // 사용자 추세선 (line series)
+
+  const sep2 = document.createElement("div");
+  sep2.className = "sep";
+  nav.appendChild(sep2);
+
+  function makeDrawBtn(label, mode) {
+    const b = document.createElement("button");
+    b.className = "toggle";
+    b.textContent = label;
+    b.addEventListener("click", () => {
+      drawMode = drawMode === mode ? null : mode;
+      pending = null;
+      btnDrawT.classList.toggle("on-draw", drawMode === "trend");
+      btnDrawH.classList.toggle("on-draw", drawMode === "horiz");
+      $("chart-wrap").style.cursor = drawMode ? "crosshair" : "";
+      setDrawHint();
+    });
+    return b;
+  }
+  const btnDrawT = makeDrawBtn("✏ 추세선", "trend");
+  const btnDrawH = makeDrawBtn("─ 수평선", "horiz");
+  const btnErase = document.createElement("button");
+  btnErase.className = "toggle";
+  btnErase.textContent = "지우기";
+  btnErase.addEventListener("click", clearUserLines);
+  nav.appendChild(btnDrawT);
+  nav.appendChild(btnDrawH);
+  nav.appendChild(btnErase);
+
+  function clearUserLines() {
+    userLines.forEach(l => { try { candles.removePriceLine(l); } catch {} });
+    userLines = [];
+    userSeries.forEach(s => { try { chart.removeSeries(s); } catch {} });
+    userSeries = [];
+    pending = null;
+    setDrawHint();
+  }
+  function setDrawHint() {
+    const el = $("draw-hint");
+    if (drawMode === "trend") el.textContent = pending ? "끝점을 클릭하세요" : "시작점을 클릭하세요";
+    else if (drawMode === "horiz") el.textContent = "가격 위치를 클릭하세요";
+    else el.textContent = "";
+  }
+
+  chart.subscribeClick(param => {
+    if (!drawMode || !param.point) return;
+    const price = candles.coordinateToPrice(param.point.y);
+    if (price == null || !param.time) return;
+
+    if (drawMode === "horiz") {
+      userLines.push(candles.createPriceLine({
+        price, color: "#c084fc", lineWidth: 2,
+        lineStyle: LightweightCharts.LineStyle.Solid,
+        axisLabelVisible: true, title: "내 라인",
+      }));
+      return;
+    }
+    // 추세선: 두 번 클릭으로 완성
+    if (!pending) {
+      pending = { time: param.time, price };
+      setDrawHint();
+      return;
+    }
+    if (pending.time === param.time) return;   // 같은 봉 두 번 클릭 방지
+    const pts = [pending, { time: param.time, price }]
+      .sort((a, b) => a.time - b.time)
+      .map(p => ({ time: p.time, value: p.price }));
+    const s = chart.addLineSeries({
+      color: "#c084fc", lineWidth: 2,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    s.setData(pts);
+    userSeries.push(s);
+    pending = null;
+    setDrawHint();
+  });
+
+  // ── AI 해설 ──
+  const sep3 = document.createElement("div");
+  sep3.className = "sep";
+  nav.appendChild(sep3);
+  const btnAI = document.createElement("button");
+  btnAI.className = "toggle on-ai";
+  btnAI.textContent = "AI 해설";
+  btnAI.addEventListener("click", showCommentary);
+  nav.appendChild(btnAI);
+
+  function fmtSlope(t) {
+    return t.slope > 0 ? "우상향" : "우하향";
+  }
+  function buildLocalCommentary() {
+    if (!lastAnalysis) return "분석 데이터가 아직 없습니다. 차트가 로드된 뒤 다시 눌러주세요.";
+    const { price, sup, res, trends, bars } = lastAnalysis;
+    const out = [];
+    out.push(`현재 ${current.label} 기준 BTC 가격은 ${fmtPrice(price)} 달러입니다.`);
+    if (bars.length >= 10) {
+      const ago = bars[Math.max(0, bars.length - 10)].close;
+      const chg = ((price - ago) / ago * 100).toFixed(1);
+      out.push(`최근 10개 봉 동안 ${chg >= 0 ? "+" : ""}${chg}% ${chg >= 0 ? "상승" : "하락"}했습니다.`);
+    }
+    if (sup) {
+      const d = ((price - sup.price) / price * 100).toFixed(1);
+      out.push(`가장 가까운 지지선은 ${fmtPrice(sup.price)} (현재가 대비 -${d}%, ${sup.touches}회 확인)으로, 이 구간이 지켜지는지가 단기 방어선입니다.`);
+    }
+    if (res) {
+      const d = ((res.price - price) / price * 100).toFixed(1);
+      out.push(`가장 가까운 저항선은 ${fmtPrice(res.price)} (+${d}%, ${res.touches}회 확인)이며, 돌파 시 다음 구간까지 열릴 수 있습니다.`);
+    }
+    for (const t of trends) {
+      out.push(`${t.kind}은 ${fmtSlope(t)} 기울기로 ${t.touches}개 스윙 포인트를 지지받고 있습니다.`);
+    }
+    if (sup && res) {
+      const room = ((res.price - price) / (price - sup.price)).toFixed(1);
+      out.push(`현재 위치는 지지-저항 사이 구간으로, 위쪽 여유 공간이 아래쪽의 약 ${room}배입니다.`);
+    }
+    out.push("※ 자동 계산된 참고 자료이며 투자 판단의 책임은 본인에게 있습니다.");
+    return out.join(" ");
+  }
+
+  async function showCommentary() {
+    const panel = $("ai-panel");
+    const body = $("ai-body");
+    panel.style.display = "block";
+    body.textContent = "해설을 생성하는 중…";
+    const local = buildLocalCommentary();
+    // Claude API 사용 가능 환경(Claude 아티팩트)에서는 AI 해설, 아니면 규칙 기반 요약
+    try {
+      const ctx = lastAnalysis ? {
+        시간봉: current.label,
+        현재가: lastAnalysis.price,
+        지지선: lastAnalysis.sup,
+        저항선: lastAnalysis.res,
+        추세선: lastAnalysis.trends,
+        최근봉: lastAnalysis.bars.map(b => ({ t: b.time, c: b.close })),
+      } : null;
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [{
+            role: "user",
+            content: "다음은 비트코인 차트 자동 분석 결과입니다. 한국어로 5~7문장의 간결한 기술적 해설을 작성하세요. 지지/저항 위치와 추세선의 의미, 주목할 가격대를 설명하되 매수/매도 지시는 하지 말고, 마지막에 투자 판단은 본인 책임이라는 한 문장을 붙이세요. 데이터: " + JSON.stringify(ctx),
+          }],
+        }),
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
+      if (!text) throw new Error("빈 응답");
+      $("ai-src").textContent = "Claude 분석";
+      body.textContent = text;
+    } catch {
+      $("ai-src").textContent = "규칙 기반 요약 (Claude API 미연결 환경)";
+      body.textContent = local;
+    }
+  }
 
   const conn = document.createElement("div");
   conn.className = "conn";
@@ -686,10 +902,12 @@
   function switchTimeframe(tf) {
     if (tf.key === current.key) return;
     current = tf;
+    clearUserLines();   // 시간봉이 바뀌면 사용자 선은 좌표 기준이 달라지므로 정리
     nav.querySelectorAll("button").forEach(b =>
       b.classList.toggle("active", b.dataset.key === tf.key));
     loadTimeframe(tf).then(() => connectWS(tf));
   }
+  $("ai-close").addEventListener("click", () => { $("ai-panel").style.display = "none"; });
 
   // ── 시작 ──
   loadTimeframe(current).then(() => connectWS(current));
