@@ -445,24 +445,42 @@
     return clusters.map(c => ({ price: c.avg, touches: c.points.length }));
   }
 
-  // 스윙 포인트 쌍을 이어 보고, 터치 多 + 이탈 無 조합을 최적 추세선으로 선택
-  function bestTrendline(pivots, type, tolPct) {
+  // 스윙 포인트 쌍을 이어 보고, "캔들을 관통하지 않으면서" 접촉이 많은 조합을 최적 추세선으로 선택
+  // bars: 검증에 사용할 전체 캔들 (선이 마지막 봉까지 연장되므로 시작점~끝까지 전 구간을 검사)
+  function bestTrendline(pivots, bars, type, tolPct) {
     if (pivots.length < 2) return null;
     let best = null;
+    const lastIdx = bars.length - 1;
     for (let a = 0; a < pivots.length - 1; a++) {
       for (let b = a + 1; b < pivots.length; b++) {
         const p1 = pivots[a], p2 = pivots[b];
+        if (p2.i - p1.i < 3) continue;               // 너무 붙은 두 점은 기울기가 불안정
         const slope = (p2.price - p1.price) / (p2.i - p1.i);
-        let touches = 0, viol = 0;
+
+        // 검증 1: 시작점부터 차트 끝까지 캔들 관통 금지
+        // (지지선 아래로 저가가 뚫거나, 저항선 위로 고가가 뚫으면 탈락. 미세한 꼬리 이탈 1회만 허용)
+        let pierce = 0, ok = true;
+        for (let i = p1.i; i <= lastIdx; i++) {
+          const lv = p1.price + slope * (i - p1.i);
+          if (lv <= 0) { ok = false; break; }
+          const over = type === "sup"
+            ? (lv - bars[i].low) / lv               // 지지선 아래로 뚫린 깊이
+            : (bars[i].high - lv) / lv;             // 저항선 위로 뚫린 깊이
+          if (over > tolPct * 2) { ok = false; break; }   // 명백한 관통 → 즉시 탈락
+          if (over > tolPct * 0.6) pierce++;              // 꼬리가 살짝 넘는 정도
+        }
+        if (!ok || pierce > 1) continue;
+
+        // 검증 2: 스윙 포인트 접촉 수 (선 근처 tol 이내)
+        let touches = 0;
         for (const q of pivots) {
           const lv = p1.price + slope * (q.i - p1.i);
-          const d = (q.price - lv) / lv;
-          if (Math.abs(d) <= tolPct) touches++;
-          else if ((type === "sup" && d < -tolPct * 1.5) ||
-                   (type === "res" && d > tolPct * 1.5)) viol++;
+          if (Math.abs((q.price - lv) / lv) <= tolPct) touches++;
         }
-        if (viol > 0 || touches < 2) continue;
-        const score = touches * 10 + (p2.i - p1.i) * 0.05;
+        if (touches < 2) continue;
+
+        // 점수: 접촉 3회 이상 강하게 우대 + 두 점 사이가 넓을수록(기울기 안정) 가산
+        const score = touches * 10 + (touches >= 3 ? 25 : 0) + (p2.i - p1.i) * 0.1;
         if (!best || score > best.score) best = { p1, p2, slope, touches, score };
       }
     }
@@ -505,13 +523,16 @@
 
     let nearestSup = null, nearestRes = null;
 
-    // ① 지지/저항 수평선
+    // ① 지지/저항 수평선 — 현재가 아래(지지)와 위(저항)를 각각 따로 선정해 균형 유지
     if (showSR) {
-      const levels = clusterLevels([...highs, ...lows], tol)
-        .filter(l => l.touches >= 2)
-        .sort((a, b) => b.touches - a.touches)
-        .slice(0, 8);
-      for (const lv of levels) {
+      const all = clusterLevels([...highs, ...lows], tol).filter(l => l.touches >= 2);
+      const sups = all.filter(l => l.price <= price)
+        .sort((a, b) => b.touches - a.touches || b.price - a.price)   // 터치 우선, 동률이면 현재가에 가까운 순
+        .slice(0, 4);
+      const resis = all.filter(l => l.price > price)
+        .sort((a, b) => b.touches - a.touches || a.price - b.price)
+        .slice(0, 4);
+      for (const lv of [...sups, ...resis]) {
         const isSup = lv.price <= price;
         // 중요도(터치 횟수) 3단계: 5회↑ 굵게(3px), 3~4회 보통(2px), 2회 얇은 점선(1px)
         const w = lv.touches >= 5 ? 3 : lv.touches >= 3 ? 2 : 1;
@@ -536,8 +557,8 @@
       const win = lookback.slice(-160);
       const { highs: wh, lows: wl } = detectPivots(win, width);
       const lines = [
-        { tl: bestTrendline(wl, "sup", tol), color: "#22c55e", kind: "지지 추세선" },
-        { tl: bestTrendline(wh, "res", tol), color: "#f59e0b", kind: "저항 추세선" },
+        { tl: bestTrendline(wl, win, "sup", tol), color: "#22c55e", kind: "지지 추세선" },
+        { tl: bestTrendline(wh, win, "res", tol), color: "#f59e0b", kind: "저항 추세선" },
       ];
       for (const { tl, color, kind } of lines) {
         if (!tl) continue;
