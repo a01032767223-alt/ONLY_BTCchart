@@ -201,12 +201,17 @@
   }
   #handles .handle:hover { fill: #c084fc; }
   #handles .handle:active { cursor: grabbing; }
-  /* 선 본체를 잡거나 더블클릭할 수 있는 투명한 띠 */
+  /* 미선택 수평선 핸들: 작고 흐리게 — 차트를 가리지 않으면서 탭할 자리는 남겨둔다 */
+  #handles .handle-dim {
+    stroke-width: 1.5;
+    opacity: .45;
+  }
+  /* 선 본체를 잡거나 더블클릭할 수 있는 투명한 띠 (평소엔 안 보이고 탭으로만 반응) */
   #handles .hitline {
     pointer-events: stroke;
-    cursor: move;
+    cursor: pointer;
     stroke: transparent;
-    stroke-width: 16;
+    stroke-width: 20;
     fill: none;
   }
 
@@ -629,7 +634,7 @@
     if (showTrend && !current.aggregateYear) {
       const win = lookback.slice(-300);            // 더 긴 추세를 담도록 분석 창 확대 (160→300봉)
       const { highs: wh, lows: wl } = detectPivots(win, width);
-      const EXT = 20;                              // 앞으로 20봉까지 연장 — 향후 예상 경로 표시
+      const EXT = 60;                              // 앞으로 60봉까지 연장 — 향후 예상 경로를 더 길게 표시
       const step = win.length > 1 ? win[win.length - 1].time - win[win.length - 2].time : 0;
       const lastIdx = win.length - 1;
 
@@ -758,6 +763,8 @@
   let extendMode = false;
   let dragging = null;             // {type:'end'|'mid'|'horiz', ...}
   let previewSeries = null;
+  let selected = null;              // 현재 선택된 선 {type:'trend', ref} | {type:'horiz', ref} | null
+                                    // 선택된 선만 조작 핸들(●■)을 보여줘 차트 시야를 가리지 않게 한다
   const SNAP_PX = 14;
   const SVGNS = "http://www.w3.org/2000/svg";
 
@@ -883,11 +890,11 @@
     if (!extendMode || bi === ai || !barsArr.length) {
       return [{ time: a.time, value: a.price }, { time: b.time, value: b.price }];
     }
-    // 기울기를 유지한 채 마지막 봉을 지나 미래 12봉까지 연장
+    // 기울기를 유지한 채 마지막 봉을 지나 미래 80봉까지 연장 (기존 20봉 → 4배 확대)
     const slope = (b.price - a.price) / (bi - ai);
     const lastIdx = barsArr.length - 1;
     const step = lastIdx > 0 ? barsArr[lastIdx].time - barsArr[lastIdx - 1].time : 0;
-    const EXT = 20;
+    const EXT = 80;
     const futIdx = lastIdx + (step > 0 ? EXT : 0);
     const end = b.price + slope * (futIdx - bi);
     if (end <= 0 || futIdx <= bi) {
@@ -935,6 +942,7 @@
   }
   function restoreUserLines(key) {
     detachUserLines();
+    selected = null;
     const saved = lineStore[key];
     if (saved) {
       (saved.horiz || []).forEach(p => makeHoriz(p));
@@ -950,6 +958,7 @@
   }
   function clearUserLines() {
     detachUserLines();
+    selected = null;
     delete lineStore[current.key];
     persist();
     drawHandles();
@@ -959,7 +968,7 @@
     const el = $("draw-hint");
     if (drawMode === "trend") el.textContent = pending ? "끝점을 클릭하세요" : "시작점을 클릭하세요";
     else if (drawMode === "horiz") el.textContent = "가격 위치를 클릭하세요";
-    else if (userTrends.length || userLines.length) el.textContent = "선 위 더블클릭=삭제 · 끌기=이동 · ● 끌기=회전·길이";
+    else if (userTrends.length || userLines.length) el.textContent = "선 탭=선택(조작점 표시) · 더블탭=삭제 · 빈 곳 탭=선택 해제";
     else el.textContent = "";
   }
 
@@ -983,12 +992,21 @@
   function deleteTrend(t) {
     try { chart.removeSeries(t.series); } catch {}
     userTrends = userTrends.filter(x => x !== t);
+    if (selected && selected.type === "trend" && selected.ref === t) selected = null;
     saveStore(); rebuildHandles(); setDrawHint();
   }
   function deleteHoriz(h) {
     try { candles.removePriceLine(h.line); } catch {}
     userLines = userLines.filter(x => x !== h);
+    if (selected && selected.type === "horiz" && selected.ref === h) selected = null;
     saveStore(); rebuildHandles(); setDrawHint();
+  }
+  function selectTrend(t) { selected = { type: "trend", ref: t }; rebuildHandles(); }
+  function selectHoriz(h) { selected = { type: "horiz", ref: h }; rebuildHandles(); }
+  function deselectAll() {
+    if (!selected) return;
+    selected = null;
+    rebuildHandles();
   }
 
   function mkEl(tag, cls) {
@@ -997,15 +1015,17 @@
     return e;
   }
 
-  // 선이 추가·삭제될 때만 호출 (DOM 재구성)
+  // 선이 추가·삭제·선택될 때만 호출 (DOM 재구성)
   function rebuildHandles() {
     while (svg.firstChild) svg.removeChild(svg.firstChild);
     handleRefs = [];
 
     for (const t of userTrends) {
-      // 선 본체: 어느 위치든 더블클릭하면 삭제, 끌면 선 전체 이동
+      const isSel = selected && selected.type === "trend" && selected.ref === t;
+      // 선 본체: 항상 존재하는 투명 히트라인 — 탭하면 선택, 더블클릭하면 삭제, 끌면 이동
       const hit = mkEl("line", "hitline");
       hit.addEventListener("pointerdown", ev => {
+        if (!isSel) { selectTrend(t); return; }   // 미선택 상태에서는 먼저 선택만 (핸들 노출)
         const rr = chartEl.getBoundingClientRect();
         const pt = ptAt(ev.clientX - rr.left, ev.clientY - rr.top, false);
         if (!pt) return;
@@ -1017,6 +1037,8 @@
       svg.appendChild(hit);
       handleRefs.push({ el: hit, kind: "line", trend: t });
 
+      // 조작 핸들(끝점 ●, 가운데 ■)은 선택된 선에서만 렌더 — 평소엔 차트를 가리지 않음
+      if (!isSel) continue;
       for (const which of ["p1", "p2"]) {
         const c = mkEl("circle", "handle");
         c.setAttribute("r", 6);
@@ -1041,13 +1063,18 @@
     }
 
     for (const h of userLines) {
-      const r = mkEl("rect", "handle");
-      r.setAttribute("width", 14); r.setAttribute("height", 10);
+      const isSel = selected && selected.type === "horiz" && selected.ref === h;
+      const r = mkEl("rect", isSel ? "handle" : "handle handle-dim");
+      r.setAttribute("width", isSel ? 14 : 10);
+      r.setAttribute("height", isSel ? 10 : 7);
       r.setAttribute("rx", 2);
-      r.addEventListener("pointerdown", ev => startDrag(ev, { type: "horiz", item: h }));
+      r.addEventListener("pointerdown", ev => {
+        if (!isSel) { selectHoriz(h); return; }
+        startDrag(ev, { type: "horiz", item: h });
+      });
       r.addEventListener("dblclick", ev => { ev.stopPropagation(); deleteHoriz(h); });
       svg.appendChild(r);
-      handleRefs.push({ el: r, kind: "horiz", item: h });
+      handleRefs.push({ el: r, kind: "horiz", item: h, isSel });
     }
     positionHandles();
   }
@@ -1083,7 +1110,8 @@
         }
       } else {
         y = candles.priceToCoordinate(ref.item.price);
-        if (y != null) { x = w - 80; ref.el.setAttribute("x", x); ref.el.setAttribute("y", y - 5); }
+        const hh = ref.isSel ? 5 : 3.5;
+        if (y != null) { x = w - 80; ref.el.setAttribute("x", x); ref.el.setAttribute("y", y - hh); }
       }
       ref.el.style.display = (x == null || y == null) ? "none" : "";
     }
@@ -1177,9 +1205,10 @@
     if (!pt) return;
 
     if (drawMode === "horiz") {
-      makeHoriz(pt.price);
+      const item = makeHoriz(pt.price);
       saveStore();
-      drawHandles();
+      selected = { type: "horiz", ref: item };   // 그린 즉시 선택 상태로 → 핸들 바로 노출
+      rebuildHandles();
       drawMode = null;          // 하나 그리면 자동으로 모드 해제 (실수로 계속 생기는 것 방지)
       applyDrawMode();
       return;
@@ -1187,13 +1216,20 @@
     if (!pending) { pending = pt; setDrawHint(); return; }
     if (pt.time === pending.time) return;   // 같은 봉 두 번 클릭 방지
 
-    makeTrend(pending, pt);
+    const t = makeTrend(pending, pt);
     pending = null;
     clearPreview();
     saveStore();
-    drawHandles();
+    selected = { type: "trend", ref: t };    // 그린 즉시 선택 상태로 → 핸들 바로 노출
+    rebuildHandles();
     drawMode = null;            // 하나 그리면 자동으로 모드 해제
     applyDrawMode();
+  });
+
+  // 그리기 모드가 아닐 때 차트 빈 곳을 클릭하면 선택을 해제 (핸들 숨김)
+  chart.subscribeClick(param => {
+    if (drawMode) return;   // 그리기 중에는 위 로직이 처리
+    deselectAll();
   });
 
   // ── AI 해설 ──
