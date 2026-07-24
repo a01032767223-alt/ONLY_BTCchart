@@ -214,6 +214,13 @@
     stroke-width: 20;
     fill: none;
   }
+  /* 자석 스냅 지점 표시 링: 지금 손을 떼면 선이 붙을 정확한 위치 */
+  #handles .snapdot {
+    pointer-events: none;
+    fill: rgba(192,132,252,.25);
+    stroke: #c084fc;
+    stroke-width: 1.5;
+  }
 
   #banner {
     position: absolute;
@@ -512,13 +519,59 @@
         }
         if (touches < 2) continue;
 
-        // 점수: 접촉 3회↑ 우대 + 넓은 간격 가산(긴 추세선 우선) + 아직 유효한(미돌파) 선 우대
+        // 점수: 접촉 3회↑ 우대 + 넓은 간격 가산(긴 추세선 우선) + 미돌파 우대
+        //     + 최근성 가산 — p2가 최신 스윙일수록 지금 시세와 관련 깊은 선이므로 우대
+        const recency = 1 - Math.min(1, (lastIdx - p2.i) / Math.max(1, lastIdx));
         const score = touches * 10 + (touches >= 3 ? 25 : 0)
-          + span * 0.25 + (extBreak === 0 ? 15 : 0);
+          + span * 0.25 + (extBreak === 0 ? 15 : 0) + recency * 30;
         if (!best || score > best.score) best = { p1, p2, slope, touches, score, broken: extBreak > 0 };
       }
     }
     return best;
+  }
+
+  // 정밀 근사 추세선(볼록 껍질 방식): 회귀선 평행이동은 극단 스윙 1개에만 닿아
+  // 캔들에서 붕 떠 보이는 문제가 있었다. 볼록 껍질의 경계 변은 정의상
+  // ① 실제 스윙 꼬리 2개를 정확히 지나고 ② 어떤 스윙도 선을 관통하지 않으므로
+  // 눈으로 봐도 "제대로 그은 선"이 된다. 여러 변 중 최근 구간을 덮고
+  // 현재가에서 크게 벗어나지 않는 변을 고른다.
+  function hullTrendline(pivots, type, tolPct, lastIdx, price) {
+    if (pivots.length < 2) return null;
+    const pts = [...pivots].sort((a, b) => a.i - b.i);
+    const cross = (o, a, b) =>
+      (a.i - o.i) * (b.price - o.price) - (a.price - o.price) * (b.i - o.i);
+    const hull = [];
+    for (const p of pts) {
+      while (hull.length >= 2) {
+        const c = cross(hull[hull.length - 2], hull[hull.length - 1], p);
+        // 저항선 = 위쪽 껍질(좌회전 제거), 지지선 = 아래쪽 껍질(우회전 제거)
+        if (type === "res" ? c >= 0 : c <= 0) hull.pop(); else break;
+      }
+      hull.push(p);
+    }
+    if (hull.length < 2) return null;
+    let best = null;
+    for (let k = 0; k < hull.length - 1; k++) {
+      const p1 = hull[k], p2 = hull[k + 1];
+      if (p2.i === p1.i) continue;
+      const slope = (p2.price - p1.price) / (p2.i - p1.i);
+      const endNow = p1.price + slope * (lastIdx - p1.i);
+      if (endNow <= 0) continue;
+      // 유효성: 현재가에서 15% 넘게 벗어난 변은 지금 시세와 무관한 옛 경계로 보고 제외
+      if (price > 0 && Math.abs(endNow - price) / price > 0.15) continue;
+      let touches = 0;
+      for (const q of pts) {
+        const lv = p1.price + slope * (q.i - p1.i);
+        if (lv > 0 && Math.abs((q.price - lv) / lv) <= tolPct) touches++;
+      }
+      // 점수: 접촉 수 + 최근성(p2가 최신일수록) + 현재가 근접 가산
+      const recency = 1 - Math.min(1, (lastIdx - p2.i) / Math.max(1, lastIdx));
+      const prox = price > 0 ? 1 - Math.min(1, Math.abs(endNow - price) / price / 0.15) : 0;
+      const score = touches * 10 + recency * 30 + prox * 15;
+      if (!best || score > best.score) best = { p1, p2, slope, touches, score };
+    }
+    if (!best) return null;
+    return { p1: best.p1, slope: best.slope, touches: Math.max(best.touches, 2) };
   }
 
   // 근사 추세선: 엄격한 조건을 만족하는 선이 없어도 투자 판단 기준은 항상 필요하므로,
@@ -655,14 +708,19 @@
             pivots.push({ i: bi, time: win[bi].time,
               price: type === "res" ? win[bi].high : win[bi].low });
           }
-          return regressionTrendline(pivots, type, tol);
+        } else {
+          // [1단계] 엄격 검증 통과 선 (관통 금지·접촉 확인)
+          const tl = bestTrendline(pivots, win, type, tol);
+          if (tl) {
+            const endNow = tl.p1.price + tl.slope * (lastIdx - tl.p1.i);
+            // 유효성: 현재가에서 15% 이상 벗어난 엄격 선은 다음 단계로 넘긴다
+            if (endNow > 0 && Math.abs(endNow - price) / price <= 0.15) return tl;
+          }
         }
-        const tl = bestTrendline(pivots, win, type, tol);
-        if (tl) {
-          const endNow = tl.p1.price + tl.slope * (lastIdx - tl.p1.i);
-          // 유효성: 현재가에서 15% 이상 벗어난 엄격 선은 근사선으로 대체
-          if (endNow > 0 && Math.abs(endNow - price) / price <= 0.15) return tl;
-        }
+        // [2단계] 볼록 껍질 경계선 — 실제 스윙 꼬리 2개에 정확히 닿는 정밀 근사
+        const hl = hullTrendline(pivots, type, tol, lastIdx, price);
+        if (hl) return { ...hl, approx: true, hull: true };
+        // [3단계] 회귀 근사 — 껍질마저 실패한 극단 지형의 최후 수단
         return regressionTrendline(pivots, type, tol);
       };
 
@@ -680,10 +738,14 @@
         const endTime = canExt ? win[lastIdx].time + step * EXT : win[lastIdx].time;
         const endVal = canExt ? futPrice : endNow;
         const s = chart.addLineSeries({
-          // 근사선은 얇고 흐린 점선으로 구분 (엄격 검증 통과 선과 시각적 차등)
-          color: tl.approx ? color + "88" : color,
-          lineWidth: tl.approx ? 1 : (tl.touches >= 4 ? 3 : tl.touches >= 3 ? 2 : 1),
-          lineStyle: tl.approx ? LightweightCharts.LineStyle.Dotted : LightweightCharts.LineStyle.Dashed,
+          // 시각 차등 3단계: 엄격 검증 선(진한 파선) > 껍질 경계선(파선·중간 굵기)
+          //                > 회귀 근사선(얇고 흐린 점선)
+          color: tl.approx && !tl.hull ? color + "88" : color,
+          lineWidth: tl.hull ? (tl.touches >= 3 ? 2 : 1)
+            : tl.approx ? 1 : (tl.touches >= 4 ? 3 : tl.touches >= 3 ? 2 : 1),
+          lineStyle: tl.approx && !tl.hull
+            ? LightweightCharts.LineStyle.Dotted
+            : LightweightCharts.LineStyle.Dashed,
           priceLineVisible: false, lastValueVisible: false,
           crosshairMarkerVisible: false,
         });
@@ -692,8 +754,8 @@
           { time: endTime, value: endVal },
         ]);
         trendSeries.push(s);
-        trendInfo.push({ kind: kind + (tl.approx ? " (근사)" : ""), slope: tl.slope,
-          touches: tl.touches, endPrice: endNow, broken: !!tl.broken });
+        trendInfo.push({ kind: kind + (tl.hull ? " (경계)" : tl.approx ? " (근사)" : ""),
+          slope: tl.slope, touches: tl.touches, endPrice: endNow, broken: !!tl.broken });
       }
     }
 
@@ -765,7 +827,7 @@
   let previewSeries = null;
   let selected = null;              // 현재 선택된 선 {type:'trend', ref} | {type:'horiz', ref} | null
                                     // 선택된 선만 조작 핸들(●■)을 보여줘 차트 시야를 가리지 않게 한다
-  const SNAP_PX = 14;
+  const SNAP_PX = 18;   // 2차원(가로+세로) 스냅 반경 — 모바일 터치를 감안해 소폭 확대
   const SVGNS = "http://www.w3.org/2000/svg";
 
   // 시간봉별 저장소: 사용자가 지우기 전까지 선을 보존
@@ -855,25 +917,46 @@
   grpDraw.appendChild(btnExtend);
   grpDraw.appendChild(btnErase);
 
-  // ── 좌표 → 캔들 지점 변환 (useMagnet=true면 고가/저가/시가/종가에 스냅) ──
+  // ── 좌표 → 캔들 지점 변환 (정밀 자석 스냅) ──
+  // 커서 아래 봉 1개만 보던 기존 방식은 꼬리 끝을 노려도 가로로 조금 빗나가면
+  // 엉뚱한 봉에 붙었다. 이제 좌우 이웃 봉까지 함께 검사하고, 세로 거리만이 아닌
+  // 2차원(가로+세로) 픽셀 거리로 가장 가까운 지점을 고른다.
+  // 추세선은 관례상 꼬리(고가·저가)를 잇는 것이므로 고가·저가에 가중 우선권을 준다.
   function ptAt(x, y, useMagnet) {
     if (!barsArr.length) return null;
-    const logical = chart.timeScale().coordinateToLogical(x);
+    const ts = chart.timeScale();
+    const logical = ts.coordinateToLogical(x);
     if (logical == null) return null;
     const idx = Math.max(0, Math.min(barsArr.length - 1, Math.round(logical)));
     const bar = barsArr[idx];
     const raw = candles.coordinateToPrice(y);
     if (raw == null) return null;
-    if (!useMagnet) return { time: bar.time, idx, price: raw };
-    let best = null, bestD = Infinity;
-    for (const p of [bar.high, bar.low, bar.open, bar.close]) {
-      const cy = candles.priceToCoordinate(p);
-      if (cy == null) continue;
-      const d = Math.abs(cy - y);
-      if (d < bestD) { bestD = d; best = p; }
+    if (!useMagnet) return { time: bar.time, idx, price: raw, snapped: false };
+    let best = null, bestScore = Infinity;
+    const from = Math.max(0, idx - 2), to = Math.min(barsArr.length - 1, idx + 2);
+    for (let i = from; i <= to; i++) {
+      const b = barsArr[i];
+      const bx = ts.timeToCoordinate(b.time);
+      if (bx == null) continue;
+      const dx = bx - x;
+      // 후보: 고가·저가(꼬리)는 가중 0.55로 우선, 시가·종가는 1.0
+      const cands = [
+        [b.high, 0.55], [b.low, 0.55], [b.open, 1.0], [b.close, 1.0],
+      ];
+      for (const [p, w] of cands) {
+        const cy = candles.priceToCoordinate(p);
+        if (cy == null) continue;
+        const dist = Math.hypot(dx, cy - y);
+        if (dist > SNAP_PX) continue;          // 실제 반경 밖이면 제외
+        const score = dist * w;                 // 가중 점수로 꼬리 우선
+        if (score < bestScore) {
+          bestScore = score;
+          best = { time: b.time, idx: i, price: p };
+        }
+      }
     }
-    const ok = best != null && bestD <= SNAP_PX;
-    return { time: bar.time, idx, price: ok ? best : raw };
+    if (best) return { ...best, snapped: true };
+    return { time: bar.time, idx, price: raw, snapped: false };
   }
   const snapAt = (x, y) => ptAt(x, y, magnet);
   function nearestIdx(time) {
@@ -932,6 +1015,7 @@
 
   function clearPreview() {
     if (previewSeries) { try { chart.removeSeries(previewSeries); } catch {} previewSeries = null; }
+    if (typeof hideSnapDot === "function") hideSnapDot();
   }
   function detachUserLines() {
     userLines.forEach(h => { try { candles.removePriceLine(h.line); } catch {} });
@@ -979,6 +1063,24 @@
   let handleRefs = [];       // {el, kind, trend?, which?, item?}
   let handlesRaf = 0;
 
+  // 스냅 지점 표시 링: 그리는 중·드래그 중 선이 정확히 어느 지점(꼬리·몸통)에
+  // 붙을지 실시간으로 보여줘 손을 떼기 전에 정밀하게 조준할 수 있게 한다.
+  const snapDot = document.createElementNS(SVGNS, "circle");
+  snapDot.setAttribute("class", "snapdot");
+  snapDot.setAttribute("r", 5);
+  snapDot.style.display = "none";
+  svg.appendChild(snapDot);
+  function showSnapDot(pt) {
+    if (!pt || !pt.snapped) { hideSnapDot(); return; }
+    const sx = chart.timeScale().timeToCoordinate(pt.time);
+    const sy = candles.priceToCoordinate(pt.price);
+    if (sx == null || sy == null) { hideSnapDot(); return; }
+    snapDot.setAttribute("cx", sx);
+    snapDot.setAttribute("cy", sy);
+    snapDot.style.display = "";
+  }
+  function hideSnapDot() { snapDot.style.display = "none"; }
+
   function startDrag(ev, d) {
     ev.preventDefault(); ev.stopPropagation();
     dragging = d;
@@ -1018,6 +1120,7 @@
   // 선이 추가·삭제·선택될 때만 호출 (DOM 재구성)
   function rebuildHandles() {
     while (svg.firstChild) svg.removeChild(svg.firstChild);
+    svg.appendChild(snapDot);   // 스냅 링은 항상 유지 (제거 후 재부착)
     handleRefs = [];
 
     for (const t of userTrends) {
@@ -1133,6 +1236,7 @@
     if (dragging.type === "end") {
       const pt = snapAt(x, y);
       if (!pt) return;
+      showSnapDot(pt);
       const cur = dragging.trend[dragging.which];
       if (cur.time === pt.time && cur.price === pt.price) return;  // 변화 없으면 건너뜀
       dragging.trend[dragging.which] = pt;
@@ -1167,6 +1271,7 @@
     window.removeEventListener("pointermove", onDragMove);
     if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = 0; }
     dragging = null; dragPos = null;
+    hideSnapDot();
     chart.applyOptions({ handleScroll: true, handleScale: true });
     saveStore();
     setDrawHint();
@@ -1178,8 +1283,11 @@
   // ── 그리는 중 미리보기 (프레임당 1회) ──
   let previewRaf = 0, previewPt = null;
   chart.subscribeCrosshairMove(param => {
-    if (drawMode !== "trend" || !pending || !param.point) return;
+    if (!drawMode || !param.point) { if (!dragging) hideSnapDot(); return; }
     const pt = snapAt(param.point.x, param.point.y);
+    // 첫 클릭 전에도 스냅 링을 보여줘 시작점부터 정확히 조준할 수 있게 한다
+    showSnapDot(pt);
+    if (drawMode !== "trend" || !pending) return;
     if (!pt || pt.time === pending.time) return;
     previewPt = pt;
     if (previewRaf) return;
@@ -1206,6 +1314,7 @@
 
     if (drawMode === "horiz") {
       const item = makeHoriz(pt.price);
+      hideSnapDot();
       saveStore();
       selected = { type: "horiz", ref: item };   // 그린 즉시 선택 상태로 → 핸들 바로 노출
       rebuildHandles();
