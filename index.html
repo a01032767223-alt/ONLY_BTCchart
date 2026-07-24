@@ -46,11 +46,7 @@
     border-bottom: 1px solid var(--border);
     flex-wrap: wrap;
   }
-  .symbol {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
+  .symbol { display: flex; align-items: center; gap: 8px; }
   .btc-mark {
     width: 26px; height: 26px;
     border-radius: 50%;
@@ -128,20 +124,79 @@
   .toggle { font-size: 12px; }
   .toggle.on-sr { color: #22c55e; background: rgba(34,197,94,.08); border-color: rgba(34,197,94,.3); }
   .toggle.on-tr { color: #f59e0b; background: rgba(245,158,11,.08); border-color: rgba(245,158,11,.3); }
+  .toggle.on-draw { color: #c084fc; background: rgba(192,132,252,.15); border-color: rgba(192,132,252,.5); }
+  .toggle.on-ai { color: var(--btc); border-color: rgba(247,147,26,.35); background: rgba(247,147,26,.08); }
 
   #sr-info { display: flex; gap: 14px; flex-wrap: wrap; }
   #sr-info .sup { color: #22c55e; font-family: var(--mono); font-variant-numeric: tabular-nums; }
   #sr-info .res { color: #f59e0b; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
-  .toggle.on-draw { color: #c084fc; background: rgba(192,132,252,.15); border-color: rgba(192,132,252,.5); }
-  .toggle.on-ai { color: var(--btc); border-color: rgba(247,147,26,.35); background: rgba(247,147,26,.08); }
   #draw-hint {
     position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
     font-size: 12px; color: #c084fc; z-index: 5; pointer-events: none;
     background: rgba(19,23,34,.85); padding: 4px 12px; border-radius: 6px;
+    white-space: nowrap;
   }
   #draw-hint:empty { display: none; }
 
+  .conn {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--muted);
+    flex-shrink: 0;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #555c6e; }
+  .dot.live { background: #22c55e; animation: pulse 1.6s ease-in-out infinite; }
+  .dot.err { background: var(--up); }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(34,197,94,.5); }
+    50% { box-shadow: 0 0 0 5px rgba(34,197,94,0); }
+  }
+  @media (prefers-reduced-motion: reduce) { .dot.live { animation: none; } }
+
+  /* ── 차트 ── */
+  #chart-wrap { flex: 1; position: relative; min-height: 0; }
+  #chart { position: absolute; inset: 0; }
+  #handles {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    z-index: 3;
+    overflow: visible;
+    width: 100%; height: 100%;
+  }
+  #handles .handle {
+    pointer-events: auto;
+    cursor: grab;
+    fill: #131722;
+    stroke: #c084fc;
+    stroke-width: 2.5;
+  }
+  #handles .handle:hover { fill: #c084fc; }
+  #handles .handle:active { cursor: grabbing; }
+
+  #banner {
+    position: absolute;
+    top: 12px; left: 50%;
+    transform: translateX(-50%);
+    background: rgba(239,68,68,.14);
+    border: 1px solid rgba(239,68,68,.4);
+    color: #fca5a5;
+    font-size: 12px;
+    padding: 7px 14px;
+    border-radius: 6px;
+    display: none;
+    z-index: 5;
+    max-width: 90%;
+  }
+  #loading {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 13px;
+    background: var(--bg);
+    z-index: 4;
+  }
+
+  /* ── AI 해설 패널 ── */
   #ai-panel {
     display: none;
     border-top: 1px solid var(--border);
@@ -164,63 +219,6 @@
     padding: 8px 16px 12px;
     font-size: 13px; line-height: 1.7; color: var(--text);
     white-space: pre-wrap;
-  }
-
-  .conn {
-    margin-left: auto;
-    display: flex; align-items: center; gap: 6px;
-    font-size: 11px; color: var(--muted);
-  }
-  .dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: #555c6e;
-  }
-  .dot.live { background: #22c55e; animation: pulse 1.6s ease-in-out infinite; }
-  .dot.err { background: var(--up); }
-  @keyframes pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(34,197,94,.5); }
-    50% { box-shadow: 0 0 0 5px rgba(34,197,94,0); }
-  }
-  @media (prefers-reduced-motion: reduce) { .dot.live { animation: none; } }
-
-  /* ── 차트 ── */
-  #chart-wrap { flex: 1; position: relative; min-height: 0; }
-  #chart { position: absolute; inset: 0; }
-  #handles {
-    position: absolute; inset: 0;
-    pointer-events: none;
-    z-index: 3;
-    overflow: visible;
-  }
-  #handles .handle {
-    pointer-events: auto;
-    cursor: grab;
-    fill: #131722;
-    stroke: #c084fc;
-    stroke-width: 2.5;
-  }
-  #handles .handle:hover { fill: #c084fc; r: 7; }
-  #handles .handle:active { cursor: grabbing; }
-  #banner {
-    position: absolute;
-    top: 12px; left: 50%;
-    transform: translateX(-50%);
-    background: rgba(239,68,68,.14);
-    border: 1px solid rgba(239,68,68,.4);
-    color: #fca5a5;
-    font-size: 12px;
-    padding: 7px 14px;
-    border-radius: 6px;
-    display: none;
-    z-index: 5;
-    max-width: 90%;
-  }
-  #loading {
-    position: absolute; inset: 0;
-    display: flex; align-items: center; justify-content: center;
-    color: var(--muted); font-size: 13px;
-    background: var(--bg);
-    z-index: 4;
   }
 
   footer {
@@ -341,9 +339,7 @@
       visible: true, text: "BTC/USDT", color: "rgba(139,147,167,.08)",
       fontSize: 44, horzAlign: "center", vertAlign: "center",
     },
-    localization: {
-      priceFormatter: fmtPrice,
-    },
+    localization: { priceFormatter: fmtPrice },
   });
 
   const candles = chart.addCandlestickSeries({
@@ -360,6 +356,7 @@
   new ResizeObserver(() => {
     const el = $("chart-wrap");
     chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+    drawHandles();
   }).observe($("chart-wrap"));
 
   // ── 상태 ──
@@ -537,6 +534,7 @@
     b.addEventListener("click", () => switchTimeframe(tf));
     nav.appendChild(b);
   });
+
   const tools = $("tools");
   const lblAuto = document.createElement("span");
   lblAuto.className = "grp-label";
@@ -567,17 +565,37 @@
   });
   tools.appendChild(btnTR);
 
-  // ── 사용자 그리기 도구 (캔들 자석 스냅 + 끝점 드래그 편집) ──
+  // ── 사용자 그리기 도구 (자석 스냅 · 이동/회전 · 자동 저장) ──
   let drawMode = null;             // null | 'trend' | 'horiz'
   let pending = null;              // 추세선 첫 클릭 지점
-  let userLines = [];              // 사용자 수평선 (priceLine)
-  let userTrends = [];             // {p1, p2, series} 사용자 추세선
-  let barsArr = [];                // 현재 시간봉의 정렬된 캔들 (스냅 계산용)
-  let magnet = true;               // 캔들 자석 on/off
-  let extendMode = false;          // 오른쪽 끝까지 연장
-  let dragging = null;             // {trend, which}
+  let userLines = [];              // {price, line} 사용자 수평선
+  let userTrends = [];             // {p1,p2,series} 사용자 추세선
+  let barsArr = [];                // 현재 시간봉의 정렬된 캔들
+  let magnet = true;
+  let extendMode = false;
+  let dragging = null;             // {type:'end'|'mid'|'horiz', ...}
   let previewSeries = null;
-  const SNAP_PX = 14;              // 자석이 붙는 거리(픽셀)
+  const SNAP_PX = 14;
+  const SVGNS = "http://www.w3.org/2000/svg";
+
+  // 시간봉별 저장소: 사용자가 지우기 전까지 선을 보존
+  // (일반 브라우저에서는 새로고침 후에도 유지, 저장 불가 환경에서는 세션 동안만 유지)
+  const STORE_KEY = "btc_chart_user_lines_v1";
+  let lineStore = {};
+  try { lineStore = JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch {}
+  function persist() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(lineStore)); } catch {}
+  }
+  function saveStore() {
+    lineStore[current.key] = {
+      horiz: userLines.map(h => h.price),
+      trends: userTrends.map(t => ({
+        p1: { time: t.p1.time, price: t.p1.price },
+        p2: { time: t.p2.time, price: t.p2.price },
+      })),
+    };
+    persist();
+  }
 
   const sep2 = document.createElement("div");
   sep2.className = "sep";
@@ -632,6 +650,7 @@
   const btnErase = document.createElement("button");
   btnErase.className = "toggle";
   btnErase.textContent = "지우기";
+  btnErase.title = "직접 그은 선을 모두 삭제합니다 (개별 삭제는 핸들 더블클릭)";
   btnErase.addEventListener("click", clearUserLines);
 
   tools.appendChild(btnDrawT);
@@ -640,8 +659,8 @@
   tools.appendChild(btnExtend);
   tools.appendChild(btnErase);
 
-  // ── 스냅: 커서 위치를 가장 가까운 캔들의 고가/저가/시가/종가에 붙임 ──
-  function snapAt(x, y) {
+  // ── 좌표 → 캔들 지점 변환 (useMagnet=true면 고가/저가/시가/종가에 스냅) ──
+  function ptAt(x, y, useMagnet) {
     if (!barsArr.length) return null;
     const logical = chart.timeScale().coordinateToLogical(x);
     if (logical == null) return null;
@@ -649,8 +668,7 @@
     const bar = barsArr[idx];
     const raw = candles.coordinateToPrice(y);
     if (raw == null) return null;
-    if (!magnet) return { time: bar.time, idx, price: raw, snapped: false };
-
+    if (!useMagnet) return { time: bar.time, idx, price: raw };
     let best = null, bestD = Infinity;
     for (const p of [bar.high, bar.low, bar.open, bar.close]) {
       const cy = candles.priceToCoordinate(p);
@@ -659,20 +677,28 @@
       if (d < bestD) { bestD = d; best = p; }
     }
     const ok = best != null && bestD <= SNAP_PX;
-    return { time: bar.time, idx, price: ok ? best : raw, snapped: ok };
+    return { time: bar.time, idx, price: ok ? best : raw };
+  }
+  const snapAt = (x, y) => ptAt(x, y, magnet);
+  function nearestIdx(time) {
+    if (!barsArr.length) return 0;
+    let lo = 0, hi = barsArr.length - 1;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (barsArr[m].time < time) lo = m + 1; else hi = m; }
+    return lo;
   }
 
   function trendData(t) {
     const a = t.p1.time <= t.p2.time ? t.p1 : t.p2;
     const b = t.p1.time <= t.p2.time ? t.p2 : t.p1;
-    if (!extendMode || b.idx === a.idx) {
+    const ai = a.idx ?? nearestIdx(a.time), bi = b.idx ?? nearestIdx(b.time);
+    if (!extendMode || bi === ai || !barsArr.length) {
       return [{ time: a.time, value: a.price }, { time: b.time, value: b.price }];
     }
     // 기울기를 유지한 채 마지막 봉까지 연장
-    const slope = (b.price - a.price) / (b.idx - a.idx);
+    const slope = (b.price - a.price) / (bi - ai);
     const lastIdx = barsArr.length - 1;
-    const end = b.price + slope * (lastIdx - b.idx);
-    if (end <= 0 || lastIdx <= b.idx) {
+    const end = b.price + slope * (lastIdx - bi);
+    if (end <= 0 || lastIdx <= bi) {
       return [{ time: a.time, value: a.price }, { time: b.time, value: b.price }];
     }
     return [{ time: a.time, value: a.price }, { time: barsArr[lastIdx].time, value: end }];
@@ -681,16 +707,58 @@
     try { t.series.setData(trendData(t)); } catch {}
   }
 
+  function newHorizLine(price) {
+    return candles.createPriceLine({
+      price, color: "#c084fc", lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Solid,
+      axisLabelVisible: true, title: "내 라인",
+    });
+  }
+  function makeHoriz(price) {
+    const item = { price, line: newHorizLine(price) };
+    userLines.push(item);
+    return item;
+  }
+  function makeTrend(p1, p2) {
+    const s = chart.addLineSeries({
+      color: "#c084fc", lineWidth: 2,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    });
+    const t = { p1, p2, series: s };
+    renderTrend(t);
+    userTrends.push(t);
+    return t;
+  }
+
   function clearPreview() {
     if (previewSeries) { try { chart.removeSeries(previewSeries); } catch {} previewSeries = null; }
   }
-  function clearUserLines() {
-    userLines.forEach(l => { try { candles.removePriceLine(l); } catch {} });
-    userLines = [];
+  function detachUserLines() {
+    userLines.forEach(h => { try { candles.removePriceLine(h.line); } catch {} });
     userTrends.forEach(t => { try { chart.removeSeries(t.series); } catch {} });
-    userTrends = [];
+    userLines = []; userTrends = [];
     pending = null;
     clearPreview();
+  }
+  function restoreUserLines(key) {
+    detachUserLines();
+    const saved = lineStore[key];
+    if (saved) {
+      (saved.horiz || []).forEach(p => makeHoriz(p));
+      (saved.trends || []).forEach(tr => {
+        makeTrend(
+          { ...tr.p1, idx: nearestIdx(tr.p1.time) },
+          { ...tr.p2, idx: nearestIdx(tr.p2.time) }
+        );
+      });
+    }
+    drawHandles();
+    setDrawHint();
+  }
+  function clearUserLines() {
+    detachUserLines();
+    delete lineStore[current.key];
+    persist();
     drawHandles();
     setDrawHint();
   }
@@ -698,61 +766,125 @@
     const el = $("draw-hint");
     if (drawMode === "trend") el.textContent = pending ? "끝점을 클릭하세요" : "시작점을 클릭하세요";
     else if (drawMode === "horiz") el.textContent = "가격 위치를 클릭하세요";
-    else if (userTrends.length) el.textContent = "끝점(●)을 끌어 길이·각도를 조절하세요";
+    else if (userTrends.length || userLines.length) el.textContent = "● 끌기=회전·길이 · ■ 끌기=이동 · 더블클릭=삭제";
     else el.textContent = "";
   }
 
-  // ── 끝점 핸들 오버레이 ──
-  const svg = document.getElementById("handles");
+  // ── 핸들 오버레이 (● 끝점 회전/길이, ■ 가운데 이동, 우측 ▬ 수평선 이동) ──
+  const svg = $("handles");
+  const chartEl = $("chart");
+
+  function startDrag(ev, d) {
+    ev.preventDefault(); ev.stopPropagation();
+    dragging = d;
+    chart.applyOptions({ handleScroll: false, handleScale: false });
+    $("draw-hint").textContent =
+      d.type === "mid" ? "선 전체를 이동 중… 놓으면 고정됩니다" :
+      d.type === "horiz" ? "수평선을 이동 중…" :
+      "반대쪽 점을 축으로 회전·길이 조절 중…";
+  }
+  function deleteTrend(t) {
+    try { chart.removeSeries(t.series); } catch {}
+    userTrends = userTrends.filter(x => x !== t);
+    saveStore(); drawHandles(); setDrawHint();
+  }
+  function deleteHoriz(h) {
+    try { candles.removePriceLine(h.line); } catch {}
+    userLines = userLines.filter(x => x !== h);
+    saveStore(); drawHandles(); setDrawHint();
+  }
+
   function drawHandles() {
     while (svg.firstChild) svg.removeChild(svg.firstChild);
-    if (!userTrends.length) return;
     const ts = chart.timeScale();
     for (const t of userTrends) {
-      for (const which of ["p1", "p2"]) {
-        const p = t[which];
-        const x = ts.timeToCoordinate(p.time);
-        const y = candles.priceToCoordinate(p.price);
+      const x1 = ts.timeToCoordinate(t.p1.time), y1 = candles.priceToCoordinate(t.p1.price);
+      const x2 = ts.timeToCoordinate(t.p2.time), y2 = candles.priceToCoordinate(t.p2.price);
+      for (const [which, x, y] of [["p1", x1, y1], ["p2", x2, y2]]) {
         if (x == null || y == null) continue;
-        const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        const c = document.createElementNS(SVGNS, "circle");
         c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", 6);
         c.setAttribute("class", "handle");
-        c.addEventListener("pointerdown", ev => {
-          ev.preventDefault(); ev.stopPropagation();
-          dragging = { trend: t, which };
-          chart.applyOptions({ handleScroll: false, handleScale: false });
-          $("draw-hint").textContent = "끌어서 이동 중… 놓으면 고정됩니다";
-        });
+        c.addEventListener("pointerdown", ev => startDrag(ev, { type: "end", trend: t, which }));
+        c.addEventListener("dblclick", ev => { ev.stopPropagation(); deleteTrend(t); });
         svg.appendChild(c);
       }
+      if (x1 != null && x2 != null && y1 != null && y2 != null) {
+        const r = document.createElementNS(SVGNS, "rect");
+        r.setAttribute("x", (x1 + x2) / 2 - 5); r.setAttribute("y", (y1 + y2) / 2 - 5);
+        r.setAttribute("width", 10); r.setAttribute("height", 10);
+        r.setAttribute("class", "handle");
+        r.addEventListener("pointerdown", ev => {
+          const rr = chartEl.getBoundingClientRect();
+          const pt = ptAt(ev.clientX - rr.left, ev.clientY - rr.top, false);
+          if (!pt) return;
+          startDrag(ev, { type: "mid", trend: t,
+            off1: { idx: (t.p1.idx ?? nearestIdx(t.p1.time)) - pt.idx, price: t.p1.price - pt.price },
+            off2: { idx: (t.p2.idx ?? nearestIdx(t.p2.time)) - pt.idx, price: t.p2.price - pt.price } });
+        });
+        r.addEventListener("dblclick", ev => { ev.stopPropagation(); deleteTrend(t); });
+        svg.appendChild(r);
+      }
+    }
+    const w = chartEl.clientWidth;
+    for (const h of userLines) {
+      const y = candles.priceToCoordinate(h.price);
+      if (y == null) continue;
+      const r = document.createElementNS(SVGNS, "rect");
+      r.setAttribute("x", w - 80); r.setAttribute("y", y - 5);
+      r.setAttribute("width", 14); r.setAttribute("height", 10);
+      r.setAttribute("rx", 2);
+      r.setAttribute("class", "handle");
+      r.addEventListener("pointerdown", ev => startDrag(ev, { type: "horiz", item: h }));
+      r.addEventListener("dblclick", ev => { ev.stopPropagation(); deleteHoriz(h); });
+      svg.appendChild(r);
     }
   }
 
-  const chartEl = $("chart");
   chartEl.addEventListener("pointermove", ev => {
     if (!dragging) return;
     const r = chartEl.getBoundingClientRect();
-    const pt = snapAt(ev.clientX - r.left, ev.clientY - r.top);
-    if (!pt) return;
-    dragging.trend[dragging.which] = pt;
-    renderTrend(dragging.trend);
+    const x = ev.clientX - r.left, y = ev.clientY - r.top;
+    if (dragging.type === "end") {
+      const pt = snapAt(x, y);
+      if (!pt) return;
+      dragging.trend[dragging.which] = pt;
+      renderTrend(dragging.trend);
+    } else if (dragging.type === "mid") {
+      const pt = ptAt(x, y, false);
+      if (!pt) return;
+      const t = dragging.trend, n = barsArr.length - 1;
+      for (const [k, off] of [["p1", dragging.off1], ["p2", dragging.off2]]) {
+        const idx = Math.max(0, Math.min(n, pt.idx + off.idx));
+        t[k] = { idx, time: barsArr[idx].time, price: pt.price + off.price };
+      }
+      renderTrend(t);
+    } else if (dragging.type === "horiz") {
+      const p = candles.coordinateToPrice(y);
+      if (p == null) return;
+      const h = dragging.item;
+      try { candles.removePriceLine(h.line); } catch {}
+      h.price = p;
+      h.line = newHorizLine(p);
+    }
     drawHandles();
   });
   window.addEventListener("pointerup", () => {
     if (!dragging) return;
     dragging = null;
     chart.applyOptions({ handleScroll: true, handleScale: true });
+    saveStore();
     setDrawHint();
   });
 
-  // 차트를 움직이거나 확대하면 핸들 위치도 따라가도록
+  // 차트 이동·확대 시 핸들 위치 동기화
   chart.timeScale().subscribeVisibleLogicalRangeChange(() => drawHandles());
 
   // ── 그리는 중 미리보기 ──
   chart.subscribeCrosshairMove(param => {
-    if (drawMode !== "trend" || !pending || !param.point) { return; }
+    if (drawMode !== "trend" || !pending || !param.point) return;
     const pt = snapAt(param.point.x, param.point.y);
-    if (!pt) return;
+    if (!pt || pt.time === pending.time) return;
     if (!previewSeries) {
       previewSeries = chart.addLineSeries({
         color: "rgba(192,132,252,.6)", lineWidth: 1,
@@ -760,7 +892,6 @@
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       });
     }
-    if (pt.time === pending.time) return;
     const pts = [pending, pt].sort((a, b) => a.time - b.time)
       .map(p => ({ time: p.time, value: p.price }));
     try { previewSeries.setData(pts); } catch {}
@@ -772,26 +903,18 @@
     if (!pt) return;
 
     if (drawMode === "horiz") {
-      userLines.push(candles.createPriceLine({
-        price: pt.price, color: "#c084fc", lineWidth: 2,
-        lineStyle: LightweightCharts.LineStyle.Solid,
-        axisLabelVisible: true, title: "내 라인",
-      }));
+      makeHoriz(pt.price);
+      saveStore();
+      drawHandles();
       return;
     }
     if (!pending) { pending = pt; setDrawHint(); return; }
     if (pt.time === pending.time) return;   // 같은 봉 두 번 클릭 방지
 
-    const s = chart.addLineSeries({
-      color: "#c084fc", lineWidth: 2,
-      priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    const t = { p1: pending, p2: pt, series: s };
-    renderTrend(t);
-    userTrends.push(t);
+    makeTrend(pending, pt);
     pending = null;
     clearPreview();
+    saveStore();
     drawHandles();
     setDrawHint();
   });
@@ -1001,6 +1124,7 @@
       if (last) updatePrice(last.close);
       stampUpdate();
       runAnalysis();
+      restoreUserLines(tf.key);   // 저장된 사용자 선 복원
     } catch (e) {
       if (seq !== loadSeq) return;
       showBanner("데이터를 불러오지 못했습니다 (" + (e && e.message || e) + "). " +
@@ -1044,13 +1168,9 @@
           if (!bar) {
             bar = { time: Math.floor(Date.UTC(y, 0, 1) / 1000),
               open: incoming.open, high: incoming.high, low: incoming.low,
-              close: incoming.close, volume: incoming.volume, year: y,
-              _months: new Map() };
+              close: incoming.close, volume: incoming.volume, year: y };
             barMap.set(y, bar);
           }
-          if (!bar._months) bar._months = new Map();
-          bar._months.set(incoming.time, incoming);
-          // 진행 중인 달의 변동분 반영: 고저/종가/거래량 재계산은 저장된 월 데이터 기준
           bar.high = Math.max(bar.high, incoming.high);
           bar.low = Math.min(bar.low, incoming.low);
           bar.close = incoming.close;
@@ -1078,7 +1198,6 @@
   function switchTimeframe(tf) {
     if (tf.key === current.key) return;
     current = tf;
-    clearUserLines();   // 시간봉이 바뀌면 사용자 선은 좌표 기준이 달라지므로 정리
     nav.querySelectorAll("button").forEach(b =>
       b.classList.toggle("active", b.dataset.key === tf.key));
     loadTimeframe(tf).then(() => connectWS(tf));
