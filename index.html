@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>BTC 실시간 차트</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.3/lightweight-charts.standalone.production.min.js"></script>
+<style>
+  :root {
+    --bg: #0c0e14;
+    --panel: #131722;
+    --border: #232838;
+    --text: #e7ebf3;
+    --muted: #8b93a7;
+    --up: #ef4444;     /* 상승 = 빨강 (한국 관례) */
+    --down: #3b82f6;   /* 하락 = 파랑 */
+    --btc: #f7931a;
+    --mono: "SF Mono", "Cascadia Mono", Consolas, "Roboto Mono", monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── 헤더 ── */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 16px 10px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .symbol {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .btc-mark {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--btc);
+    color: #0c0e14;
+    font-weight: 800;
+    font-size: 15px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .symbol .name { font-weight: 700; font-size: 15px; letter-spacing: .2px; }
+  .symbol .pair { font-size: 11px; color: var(--muted); }
+
+  .price-block { display: flex; align-items: baseline; gap: 10px; }
+  #price {
+    font-family: var(--mono);
+    font-size: 26px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    transition: color .15s;
+  }
+  #price.tick-up { color: var(--up); }
+  #price.tick-down { color: var(--down); }
+  #chg24 {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+  }
+  #chg24.up { color: var(--up); background: rgba(239,68,68,.12); }
+  #chg24.down { color: var(--down); background: rgba(59,130,246,.12); }
+
+  .stats { display: flex; gap: 14px; margin-left: auto; }
+  .stat { text-align: right; }
+  .stat .k { font-size: 10px; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  /* ── 시간봉 탭 ── */
+  nav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  nav button {
+    background: none;
+    border: 1px solid transparent;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  nav button:hover { color: var(--text); background: var(--panel); }
+  nav button.active {
+    color: var(--btc);
+    background: rgba(247,147,26,.1);
+    border-color: rgba(247,147,26,.35);
+  }
+  nav button:focus-visible { outline: 2px solid var(--btc); outline-offset: 1px; }
+
+  .conn {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--muted);
+  }
+  .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #555c6e;
+  }
+  .dot.live { background: #22c55e; animation: pulse 1.6s ease-in-out infinite; }
+  .dot.err { background: var(--up); }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(34,197,94,.5); }
+    50% { box-shadow: 0 0 0 5px rgba(34,197,94,0); }
+  }
+  @media (prefers-reduced-motion: reduce) { .dot.live { animation: none; } }
+
+  /* ── 차트 ── */
+  #chart-wrap { flex: 1; position: relative; min-height: 0; }
+  #chart { position: absolute; inset: 0; }
+  #banner {
+    position: absolute;
+    top: 12px; left: 50%;
+    transform: translateX(-50%);
+    background: rgba(239,68,68,.14);
+    border: 1px solid rgba(239,68,68,.4);
+    color: #fca5a5;
+    font-size: 12px;
+    padding: 7px 14px;
+    border-radius: 6px;
+    display: none;
+    z-index: 5;
+    max-width: 90%;
+  }
+  #loading {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 13px;
+    background: var(--bg);
+    z-index: 4;
+  }
+
+  footer {
+    padding: 6px 16px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  #last-update { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  @media (max-width: 560px) {
+    .stats { display: none; }
+    #price { font-size: 21px; }
+    nav { overflow-x: auto; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="symbol">
+    <div class="btc-mark">₿</div>
+    <div>
+      <div class="name">비트코인</div>
+      <div class="pair">BTC/USDT · Binance</div>
+    </div>
+  </div>
+  <div class="price-block">
+    <span id="price">—</span>
+    <span id="chg24"></span>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="k">24h 고가</div><div class="v" id="high24">—</div></div>
+    <div class="stat"><div class="k">24h 저가</div><div class="v" id="low24">—</div></div>
+    <div class="stat"><div class="k">24h 거래량(BTC)</div><div class="v" id="vol24">—</div></div>
+  </div>
+</header>
+
+<nav id="tabs" aria-label="시간봉 선택"></nav>
+
+<div id="chart-wrap">
+  <div id="chart"></div>
+  <div id="loading">차트 데이터를 불러오는 중…</div>
+  <div id="banner"></div>
+</div>
+
+<footer>
+  <span>지지선·추세선 자동 분석은 다음 단계에서 추가됩니다</span>
+  <span id="last-update"></span>
+</footer>
+
+<script>
+(() => {
+  const REST = "https://api.binance.com/api/v3";
+  const WS_BASE = "wss://stream.binance.com:9443/stream?streams=";
+
+  // 시간봉 정의 (연봉은 월봉을 클라이언트에서 집계)
+  const TIMEFRAMES = [
+    { key: "1h", label: "1시간", interval: "1h", limit: 500, intraday: true },
+    { key: "4h", label: "4시간", interval: "4h", limit: 500, intraday: true },
+    { key: "1d", label: "일봉",  interval: "1d", limit: 730, intraday: false },
+    { key: "1w", label: "주봉",  interval: "1w", limit: 520, intraday: false },
+    { key: "1M", label: "월봉",  interval: "1M", limit: 200, intraday: false },
+    { key: "1y", label: "연봉",  interval: "1M", limit: 1000, intraday: false, aggregateYear: true },
+  ];
+
+  const $ = id => document.getElementById(id);
+  const fmtPrice = v => v >= 1000
+    ? v.toLocaleString("en-US", { maximumFractionDigits: 1 })
+    : v.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  const fmtVol = v => v.toLocaleString("en-US", { maximumFractionDigits: 0 });
+
+  // ── 차트 초기화 ──
+  const chart = LightweightCharts.createChart($("chart"), {
+    layout: {
+      background: { type: "solid", color: "#0c0e14" },
+      textColor: "#8b93a7",
+      fontFamily: "'SF Mono', Consolas, monospace",
+      fontSize: 11,
+    },
+    grid: {
+      vertLines: { color: "rgba(35,40,56,.55)" },
+      horzLines: { color: "rgba(35,40,56,.55)" },
+    },
+    crosshair: {
+      mode: LightweightCharts.CrosshairMode.Normal,
+      vertLine: { color: "#8b93a7", width: 1, style: 2, labelBackgroundColor: "#232838" },
+      horzLine: { color: "#8b93a7", width: 1, style: 2, labelBackgroundColor: "#232838" },
+    },
+    rightPriceScale: { borderColor: "#232838", scaleMargins: { top: 0.08, bottom: 0.22 } },
+    timeScale: { borderColor: "#232838", rightOffset: 4 },
+    watermark: {
+      visible: true, text: "BTC/USDT", color: "rgba(139,147,167,.08)",
+      fontSize: 44, horzAlign: "center", vertAlign: "center",
+    },
+    localization: {
+      priceFormatter: fmtPrice,
+    },
+  });
+
+  const candles = chart.addCandlestickSeries({
+    upColor: "#ef4444", downColor: "#3b82f6",
+    borderUpColor: "#ef4444", borderDownColor: "#3b82f6",
+    wickUpColor: "#ef4444", wickDownColor: "#3b82f6",
+  });
+  const volume = chart.addHistogramSeries({
+    priceFormat: { type: "volume" },
+    priceScaleId: "vol",
+  });
+  chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.84, bottom: 0 } });
+
+  new ResizeObserver(() => {
+    const el = $("chart-wrap");
+    chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+  }).observe($("chart-wrap"));
+
+  // ── 상태 ──
+  let current = TIMEFRAMES[2];   // 기본: 일봉
+  let ws = null;
+  let wsRetry = 0;
+  let lastPrice = null;
+  let barMap = new Map();        // time(sec) -> candle (연봉 집계용은 year -> candle)
+  let loadSeq = 0;
+
+  // ── 탭 렌더링 ──
+  const nav = $("tabs");
+  TIMEFRAMES.forEach(tf => {
+    const b = document.createElement("button");
+    b.textContent = tf.label;
+    b.dataset.key = tf.key;
+    if (tf.key === current.key) b.classList.add("active");
+    b.addEventListener("click", () => switchTimeframe(tf));
+    nav.appendChild(b);
+  });
+  const conn = document.createElement("div");
+  conn.className = "conn";
+  conn.innerHTML = '<span class="dot" id="conn-dot"></span><span id="conn-txt">연결 대기</span>';
+  nav.appendChild(conn);
+
+  function setConn(state, msg) {
+    const d = $("conn-dot");
+    d.className = "dot" + (state === "live" ? " live" : state === "err" ? " err" : "");
+    $("conn-txt").textContent = msg;
+  }
+  function showBanner(msg) {
+    const b = $("banner");
+    b.textContent = msg;
+    b.style.display = "block";
+  }
+  function hideBanner() { $("banner").style.display = "none"; }
+
+  // ── 데이터 변환 ──
+  function klineToBar(k) {
+    return {
+      time: Math.floor(k[0] / 1000),
+      open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5],
+    };
+  }
+  function aggregateYearly(bars) {
+    const byYear = new Map();
+    for (const b of bars) {
+      const y = new Date(b.time * 1000).getUTCFullYear();
+      const cur = byYear.get(y);
+      if (!cur) {
+        byYear.set(y, { time: Math.floor(Date.UTC(y, 0, 1) / 1000),
+          open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume, year: y });
+      } else {
+        cur.high = Math.max(cur.high, b.high);
+        cur.low = Math.min(cur.low, b.low);
+        cur.close = b.close;
+        cur.volume += b.volume;
+      }
+    }
+    return [...byYear.values()].sort((a, b) => a.time - b.time);
+  }
+  function volColor(bar) {
+    return bar.close >= bar.open ? "rgba(239,68,68,.35)" : "rgba(59,130,246,.35)";
+  }
+  function applyBars(bars) {
+    candles.setData(bars.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
+    volume.setData(bars.map(b => ({ time: b.time, value: b.volume, color: volColor(b) })));
+  }
+  function upsertBar(bar) {
+    candles.update({ time: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close });
+    volume.update({ time: bar.time, value: bar.volume, color: volColor(bar) });
+  }
+
+  // ── 헤더 갱신 ──
+  function updatePrice(p) {
+    const el = $("price");
+    el.textContent = fmtPrice(p);
+    if (lastPrice !== null && p !== lastPrice) {
+      el.classList.remove("tick-up", "tick-down");
+      void el.offsetWidth;
+      el.classList.add(p > lastPrice ? "tick-up" : "tick-down");
+    }
+    lastPrice = p;
+    document.title = `${fmtPrice(p)} · BTC 실시간 차트`;
+  }
+  function updateTicker(t) {
+    // miniTicker: c 현재가, o 24h 시가, h, l, v
+    const c = +t.c, o = +t.o;
+    const chg = ((c - o) / o) * 100;
+    const el = $("chg24");
+    el.textContent = (chg >= 0 ? "+" : "") + chg.toFixed(2) + "%";
+    el.className = chg >= 0 ? "up" : "down";
+    $("high24").textContent = fmtPrice(+t.h);
+    $("low24").textContent = fmtPrice(+t.l);
+    $("vol24").textContent = fmtVol(+t.v);
+    updatePrice(c);
+  }
+  function stampUpdate() {
+    $("last-update").textContent = "최근 갱신 " + new Date().toLocaleTimeString("ko-KR", { hour12: false });
+  }
+
+  // ── 시간봉 로드 ──
+  async function loadTimeframe(tf) {
+    const seq = ++loadSeq;
+    $("loading").style.display = "flex";
+    hideBanner();
+    try {
+      const url = `${REST}/klines?symbol=BTCUSDT&interval=${tf.interval}&limit=${tf.limit}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const raw = await res.json();
+      if (seq !== loadSeq) return; // 이미 다른 탭으로 전환됨
+
+      let bars = raw.map(klineToBar);
+      if (tf.aggregateYear) bars = aggregateYearly(bars);
+
+      barMap = new Map(bars.map(b => [tf.aggregateYear ? b.year : b.time, b]));
+      chart.applyOptions({ timeScale: { timeVisible: !!tf.intraday, secondsVisible: false } });
+      applyBars(bars);
+      chart.timeScale().fitContent();
+
+      const last = bars[bars.length - 1];
+      if (last) updatePrice(last.close);
+      stampUpdate();
+    } catch (e) {
+      if (seq !== loadSeq) return;
+      showBanner("데이터를 불러오지 못했습니다 (" + e.message + "). 네트워크를 확인한 뒤 시간봉 탭을 다시 눌러주세요.");
+    } finally {
+      if (seq === loadSeq) $("loading").style.display = "none";
+    }
+  }
+
+  // ── WebSocket ──
+  function connectWS(tf) {
+    if (ws) { ws.onclose = null; ws.close(); ws = null; }
+    const streams = `btcusdt@kline_${tf.interval}/btcusdt@miniTicker`;
+    setConn("", "연결 중…");
+    ws = new WebSocket(WS_BASE + streams);
+
+    ws.onopen = () => { wsRetry = 0; setConn("live", "실시간"); };
+
+    ws.onmessage = ev => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      const stream = msg.stream || "";
+      const data = msg.data;
+      if (!data) return;
+
+      if (stream.endsWith("miniTicker")) {
+        updateTicker(data);
+        stampUpdate();
+        return;
+      }
+      if (data.e === "kline") {
+        const k = data.k;
+        const incoming = {
+          time: Math.floor(k.t / 1000),
+          open: +k.o, high: +k.h, low: +k.l, close: +k.c, volume: +k.v,
+        };
+        if (tf.aggregateYear) {
+          // 월봉 스트림을 현재 연봉에 병합
+          const y = new Date(incoming.time * 1000).getUTCFullYear();
+          let bar = barMap.get(y);
+          if (!bar) {
+            bar = { time: Math.floor(Date.UTC(y, 0, 1) / 1000),
+              open: incoming.open, high: incoming.high, low: incoming.low,
+              close: incoming.close, volume: incoming.volume, year: y,
+              _months: new Map() };
+            barMap.set(y, bar);
+          }
+          if (!bar._months) bar._months = new Map();
+          bar._months.set(incoming.time, incoming);
+          // 진행 중인 달의 변동분 반영: 고저/종가/거래량 재계산은 저장된 월 데이터 기준
+          bar.high = Math.max(bar.high, incoming.high);
+          bar.low = Math.min(bar.low, incoming.low);
+          bar.close = incoming.close;
+          upsertBar(bar);
+        } else {
+          barMap.set(incoming.time, incoming);
+          upsertBar(incoming);
+        }
+        stampUpdate();
+      }
+    };
+
+    ws.onclose = () => {
+      const delay = Math.min(1000 * 2 ** wsRetry, 15000);
+      wsRetry++;
+      setConn("err", `재연결 대기 (${Math.round(delay / 1000)}초)`);
+      setTimeout(() => { if (ws && ws.readyState === WebSocket.CLOSED) connectWS(current); }, delay);
+    };
+    ws.onerror = () => { try { ws.close(); } catch {} };
+  }
+
+  // ── 탭 전환 ──
+  function switchTimeframe(tf) {
+    if (tf.key === current.key) return;
+    current = tf;
+    nav.querySelectorAll("button").forEach(b =>
+      b.classList.toggle("active", b.dataset.key === tf.key));
+    loadTimeframe(tf).then(() => connectWS(tf));
+  }
+
+  // ── 시작 ──
+  loadTimeframe(current).then(() => connectWS(current));
+})();
+</script>
+</body>
+</html>
