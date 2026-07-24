@@ -695,6 +695,13 @@
     // AI 해설용 최근 분석 결과 저장
     lastAnalysis = { price, sup: nearestSup, res: nearestRes, trends: trendInfo,
       bars: bars.slice(-30) };
+
+    // 연장 모드가 켜진 사용자 추세선도 최신 봉 기준으로 함께 밀어준다
+    // (그렇지 않으면 자동 선만 계속 늘어나고, 직접 그은 선은 그은 시점에 멈춰 있게 됨)
+    if (extendMode && userTrends.length) {
+      userTrends.forEach(renderTrend);
+      scheduleHandles();
+    }
   }
 
   // ── 탭 렌더링 ──
