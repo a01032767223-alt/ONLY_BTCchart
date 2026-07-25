@@ -421,7 +421,15 @@
   }).observe($("chart-wrap"));
 
   // ── 상태 ──
+  // 마지막으로 본 시간봉을 기억한다. 앱을 닫았다 다시 열면 그때 보던 봉으로 시작.
+  // 저장값이 없거나 알 수 없는 값이면 일봉(기본)으로 시작한다.
+  const LAST_TF_KEY = "btcchart_last_tf";
   let current = TIMEFRAMES[2];   // 기본: 일봉
+  try {
+    const savedKey = localStorage.getItem(LAST_TF_KEY);
+    const savedTf = TIMEFRAMES.find(t => t.key === savedKey);
+    if (savedTf) current = savedTf;
+  } catch {}
   let ws = null;
   let wsRetry = 0;
   let lastPrice = null;
@@ -1647,6 +1655,8 @@
   function switchTimeframe(tf) {
     if (tf.key === current.key) return;
     current = tf;
+    // 다음에 앱을 다시 열 때 이 시간봉으로 시작하도록 기억
+    try { localStorage.setItem(LAST_TF_KEY, tf.key); } catch {}
     nav.querySelectorAll("button").forEach(b =>
       b.classList.toggle("active", b.dataset.key === tf.key));
     loadTimeframe(tf).then(() => connectWS(tf));
