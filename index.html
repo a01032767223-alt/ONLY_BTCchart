@@ -884,15 +884,18 @@
   //  · 일봉(730봉)으로는 200주(1,400일)를 계산할 수 없어 주봉을 따로 1회
   //    받아 계산한 뒤 일봉 시간축에 보간해 얹는다.
   // ══════════════════════════════════════════════════════════
+  //  · 색 배정: 기존 요소(저항 주황·지지 초록·캔들 적청·사용자선 보라)와 겹치지
+  //    않는 색만 쓴다. 특히 사이클 바닥선은 금색이 저항 주황과 혼동되므로
+  //    무채색 계열로 옮기고, 중요도에 맞춰 가장 밝고 굵게 그린다.
   const MA_DEFS = [
     { key: "ema21",  label: "21 EMA",  role: "단기", type: "ema", period: 21,
       color: "#22d3ee", width: 1 },
     { key: "ema50",  label: "50 EMA",  role: "중기", type: "ema", period: 50,
       color: "#f472b6", width: 1 },
     { key: "ema200", label: "200 EMA", role: "장기", type: "ema", period: 200,
-      color: "#e5e7eb", width: 2 },
+      color: "#94a3b8", width: 2 },
     { key: "wma200", label: "200W",    role: "사이클 바닥", type: "sma", period: 200,
-      color: "#fbbf24", width: 3, weeklySource: true },
+      color: "#ffffff", width: 3, weeklySource: true },
   ];
   const MA_TIMEFRAMES = new Set(["1d", "1w"]);   // 이평선을 표시할 시간봉
   const MA_STATE_KEY = "btcchart_ma_visible";
