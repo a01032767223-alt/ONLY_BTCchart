@@ -284,10 +284,78 @@
   }
   #last-update { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
+  /* 이평선 레전드: 우측 가격축이 지지·저항 라벨로 이미 붐비므로
+     이평선 값은 축에 붙이지 않고 이곳에 모아 보여준다. 칩을 탭하면 개별 on/off */
+  #ma-legend {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding: 6px
+             calc(12px + env(safe-area-inset-right, 0px))
+             6px
+             calc(12px + env(safe-area-inset-left, 0px));
+    border-top: 1px solid var(--border);
+  }
+  #ma-legend::-webkit-scrollbar { display: none; }
+  #ma-legend:empty { display: none; }
+  #ma-legend .chip {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(35,40,56,.5);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-family: inherit;
+    font-size: 11px;
+    color: var(--text);
+    cursor: pointer;
+    line-height: 1.3;
+    white-space: nowrap;
+  }
+  #ma-legend .chip.off { opacity: .38; }
+  #ma-legend .chip .dot {
+    width: 12px; height: 3px; border-radius: 2px; flex: 0 0 auto;
+  }
+  #ma-legend .chip .nm { font-weight: 600; }
+  #ma-legend .chip .val,
+  #ma-legend .chip .dev {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+  }
+  #ma-legend .chip .val { color: var(--muted); }
+  #ma-legend .chip .dev.up { color: #ef4444; }
+  #ma-legend .chip .dev.down { color: #3b82f6; }
+  /* 골든/데드크로스 배지 */
+  #ma-legend .cross {
+    flex: 0 0 auto;
+    border-radius: 6px;
+    padding: 4px 9px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  #ma-legend .cross.golden {
+    background: rgba(239,68,68,.16);
+    border: 1px solid rgba(239,68,68,.45);
+    color: #fca5a5;
+  }
+  #ma-legend .cross.dead {
+    background: rgba(59,130,246,.16);
+    border: 1px solid rgba(59,130,246,.45);
+    color: #93c5fd;
+  }
+  #ma-legend .cross .ago { font-weight: 500; opacity: .8; }
+
   @media (max-width: 560px) {
     .stats { display: none; }
     #price { font-size: 21px; }
     nav button, #tools button { padding: 5px 9px; font-size: 12px; }
+    #ma-legend .chip { font-size: 10.5px; padding: 4px 7px; }
   }
 </style>
 </head>
@@ -322,6 +390,8 @@
   <div id="banner"></div>
   <div id="draw-hint"></div>
 </div>
+
+<div id="ma-legend" aria-label="이동평균선 (탭하여 켜고 끄기)"></div>
 
 <div id="ai-panel">
   <div id="ai-head">
@@ -804,6 +874,286 @@
       userTrends.forEach(renderTrend);
       scheduleHandles();
     }
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  이동평균선 (일봉·주봉 전용)
+  //  단기 21 EMA / 중기 50 EMA / 장기 200 EMA / 사이클 바닥 200주 SMA
+  //  · 200주선은 관례대로 단순평균(SMA)을 쓴다. 200 EMA와는 다른 선이므로
+  //    주봉에서도 두 선이 겹치지 않고 각각의 의미를 갖는다.
+  //  · 일봉(730봉)으로는 200주(1,400일)를 계산할 수 없어 주봉을 따로 1회
+  //    받아 계산한 뒤 일봉 시간축에 보간해 얹는다.
+  // ══════════════════════════════════════════════════════════
+  const MA_DEFS = [
+    { key: "ema21",  label: "21 EMA",  role: "단기", type: "ema", period: 21,
+      color: "#22d3ee", width: 1 },
+    { key: "ema50",  label: "50 EMA",  role: "중기", type: "ema", period: 50,
+      color: "#f472b6", width: 1 },
+    { key: "ema200", label: "200 EMA", role: "장기", type: "ema", period: 200,
+      color: "#e5e7eb", width: 2 },
+    { key: "wma200", label: "200W",    role: "사이클 바닥", type: "sma", period: 200,
+      color: "#fbbf24", width: 3, weeklySource: true },
+  ];
+  const MA_TIMEFRAMES = new Set(["1d", "1w"]);   // 이평선을 표시할 시간봉
+  const MA_STATE_KEY = "btcchart_ma_visible";
+
+  // 표시 여부: 기본 전부 켜기, 사용자가 끈 항목은 기기에 기억
+  let maVisible = {};
+  MA_DEFS.forEach(d => { maVisible[d.key] = true; });
+  try {
+    const saved = JSON.parse(localStorage.getItem(MA_STATE_KEY));
+    if (saved && typeof saved === "object") {
+      MA_DEFS.forEach(d => {
+        if (typeof saved[d.key] === "boolean") maVisible[d.key] = saved[d.key];
+      });
+    }
+  } catch {}
+  const saveMaState = () => {
+    try { localStorage.setItem(MA_STATE_KEY, JSON.stringify(maVisible)); } catch {}
+  };
+
+  let maSeries = new Map();     // key → LineSeries
+  let maValues = new Map();     // key → 마지막 계산값 (레전드·크로스 판정용)
+  let maLines = new Map();      // key → [{time, value}] 계산 결과 전체
+  let weeklyBars = null;        // 200주선 계산용 주봉 캐시 (일봉에서만 사용)
+  let weeklyFetchFailed = false;
+
+  // 단순이동평균: period개 종가의 평균
+  function calcSMA(bars, period) {
+    const out = [];
+    if (bars.length < period) return out;
+    let sum = 0;
+    for (let i = 0; i < bars.length; i++) {
+      sum += bars[i].close;
+      if (i >= period) sum -= bars[i - period].close;
+      if (i >= period - 1) out.push({ time: bars[i].time, value: sum / period });
+    }
+    return out;
+  }
+  // 지수이동평균: 앞 period개의 단순평균을 초기값으로 삼는 표준 방식
+  function calcEMA(bars, period) {
+    const out = [];
+    if (bars.length < period) return out;
+    const k = 2 / (period + 1);
+    let seed = 0;
+    for (let i = 0; i < period; i++) seed += bars[i].close;
+    let prev = seed / period;
+    out.push({ time: bars[period - 1].time, value: prev });
+    for (let i = period; i < bars.length; i++) {
+      prev = bars[i].close * k + prev * (1 - k);
+      out.push({ time: bars[i].time, value: prev });
+    }
+    return out;
+  }
+
+  // 주봉 기준 200주 SMA를 일봉 시간축으로 옮긴다.
+  // 주 단위 계단이 생기지 않도록 인접한 두 주값 사이를 선형 보간한다.
+  function mapWeeklyToDaily(weeklySMA, dailyBars) {
+    if (!weeklySMA.length || !dailyBars.length) return [];
+    const out = [];
+    let j = 0;
+    for (const b of dailyBars) {
+      while (j < weeklySMA.length - 1 && weeklySMA[j + 1].time <= b.time) j++;
+      const cur = weeklySMA[j];
+      if (b.time < cur.time) continue;             // 200주선이 아직 시작되지 않은 구간
+      const nxt = weeklySMA[j + 1];
+      if (!nxt) { out.push({ time: b.time, value: cur.value }); continue; }
+      const span = nxt.time - cur.time;
+      const f = span > 0 ? (b.time - cur.time) / span : 0;
+      out.push({ time: b.time, value: cur.value + (nxt.value - cur.value) * f });
+    }
+    return out;
+  }
+
+  // 일봉에서 200주선을 그리기 위한 주봉 데이터 (최초 1회만 호출)
+  async function ensureWeeklyBars() {
+    if (weeklyBars || weeklyFetchFailed) return weeklyBars;
+    const path = "/klines?symbol=BTCUSDT&interval=1w&limit=520";
+    for (let n = 0; n < REST_HOSTS.length; n++) {
+      const idx = (restIdx + n) % REST_HOSTS.length;
+      try {
+        const res = await fetch(REST_HOSTS[idx] + path, { signal: AbortSignal.timeout(7000) });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const raw = await res.json();
+        weeklyBars = raw.map(klineToBar);
+        return weeklyBars;
+      } catch {}
+    }
+    weeklyFetchFailed = true;   // 실패해도 나머지 이평선은 정상 표시
+    return null;
+  }
+
+  function clearMAs() {
+    for (const s of maSeries.values()) { try { chart.removeSeries(s); } catch {} }
+    maSeries.clear();
+    maValues.clear();
+    maLines.clear();
+    $("ma-legend").innerHTML = "";
+  }
+
+  // 현재 시간봉에서 쓸 이평선 목록 (200주선은 데이터가 확보된 경우만)
+  function activeMaDefs() {
+    if (!MA_TIMEFRAMES.has(current.key)) return [];
+    return MA_DEFS.filter(d => {
+      if (!d.weeklySource) return true;
+      // 주봉 차트에서는 자기 데이터가 곧 주봉이므로 별도 확보가 필요 없다
+      if (current.key === "1w") return true;
+      return !!weeklyBars;
+    });
+  }
+
+  function computeMaLine(def, bars) {
+    if (def.weeklySource && current.key === "1d") {
+      if (!weeklyBars) return [];
+      // 진행 중인 주의 종가는 캐시된 주봉에 아직 반영되지 않았으므로
+      // 최신 일봉 종가로 보정해 200주선의 현재값을 정확히 맞춘다.
+      let wb = weeklyBars;
+      const lastDaily = bars[bars.length - 1];
+      const lastWeek = wb[wb.length - 1];
+      if (lastDaily && lastWeek && lastDaily.time >= lastWeek.time &&
+          lastDaily.close !== lastWeek.close) {
+        wb = wb.slice(0, -1).concat([{ ...lastWeek, close: lastDaily.close }]);
+      }
+      return mapWeeklyToDaily(calcSMA(wb, def.period), bars);
+    }
+    return def.type === "ema" ? calcEMA(bars, def.period) : calcSMA(bars, def.period);
+  }
+
+  // 50 EMA와 200 EMA의 최근 교차를 찾아 현재 국면과 경과 봉 수를 알려준다
+  function detectCross() {
+    const fast = maLines.get("ema50"), slow = maLines.get("ema200");
+    if (!fast || !slow || !fast.length || !slow.length) return null;
+    const slowMap = new Map(slow.map(p => [p.time, p.value]));
+    const pairs = [];
+    for (const p of fast) {
+      const s = slowMap.get(p.time);
+      if (s != null) pairs.push({ time: p.time, diff: p.value - s });
+    }
+    if (pairs.length < 2) return null;
+    const nowUp = pairs[pairs.length - 1].diff > 0;
+    let crossIdx = -1;
+    for (let i = pairs.length - 1; i > 0; i--) {
+      const a = pairs[i - 1].diff, b = pairs[i].diff;
+      if ((a <= 0 && b > 0) || (a >= 0 && b < 0)) { crossIdx = i; break; }
+    }
+    return {
+      golden: nowUp,
+      barsAgo: crossIdx < 0 ? null : pairs.length - 1 - crossIdx,
+    };
+  }
+
+  function renderMaLegend() {
+    const box = $("ma-legend");
+    box.innerHTML = "";
+    const defs = activeMaDefs();
+    if (!defs.length) return;
+    const price = barsArr.length ? barsArr[barsArr.length - 1].close : 0;
+
+    for (const def of defs) {
+      const v = maValues.get(def.key);
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "chip" + (maVisible[def.key] ? "" : " off");
+      chip.setAttribute("aria-pressed", String(!!maVisible[def.key]));
+      chip.title = `${def.role} · ${def.label}` +
+        (def.weeklySource ? " (200주 단순평균)" : "");
+
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.background = def.color;
+      chip.appendChild(dot);
+
+      const nm = document.createElement("span");
+      nm.className = "nm";
+      nm.textContent = def.label;
+      chip.appendChild(nm);
+
+      const val = document.createElement("span");
+      val.className = "val";
+      val.textContent = v != null ? fmtPrice(v) : "—";
+      chip.appendChild(val);
+
+      if (v != null && price > 0) {
+        const dev = ((price - v) / v) * 100;
+        const el = document.createElement("span");
+        el.className = "dev " + (dev >= 0 ? "up" : "down");
+        el.textContent = (dev >= 0 ? "+" : "") + dev.toFixed(1) + "%";
+        chip.appendChild(el);
+      }
+
+      chip.addEventListener("click", () => {
+        maVisible[def.key] = !maVisible[def.key];
+        saveMaState();
+        const s = maSeries.get(def.key);
+        if (s) s.applyOptions({ visible: maVisible[def.key] });
+        chip.classList.toggle("off", !maVisible[def.key]);
+        chip.setAttribute("aria-pressed", String(maVisible[def.key]));
+      });
+      box.appendChild(chip);
+    }
+
+    const cross = detectCross();
+    if (cross) {
+      const badge = document.createElement("span");
+      badge.className = "cross " + (cross.golden ? "golden" : "dead");
+      const unit = current.key === "1w" ? "주" : "일";
+      badge.innerHTML = (cross.golden ? "골든크로스" : "데드크로스") +
+        (cross.barsAgo != null
+          ? ` <span class="ago">${cross.barsAgo}${unit} 전</span>`
+          : ` <span class="ago">유지</span>`);
+      badge.title = "50 EMA와 200 EMA의 최근 교차";
+      box.appendChild(badge);
+    }
+  }
+
+  // 이평선 전체 재계산 및 렌더 (시간봉 로드·봉 마감 시)
+  function renderMAs(bars) {
+    clearMAs();
+    if (!MA_TIMEFRAMES.has(current.key) || !bars.length) return;
+    for (const def of activeMaDefs()) {
+      const data = computeMaLine(def, bars);
+      if (!data.length) continue;
+      const s = chart.addLineSeries({
+        color: def.color,
+        lineWidth: def.width,
+        priceLineVisible: false,
+        lastValueVisible: false,      // 우측 축 혼잡을 막고 값은 레전드에 표시
+        crosshairMarkerVisible: false,
+        visible: !!maVisible[def.key],
+      });
+      s.setData(data);
+      maSeries.set(def.key, s);
+      maLines.set(def.key, data);
+      maValues.set(def.key, data[data.length - 1].value);
+    }
+    renderMaLegend();
+  }
+
+  // 틱마다 마지막 점만 갱신 (전체 setData는 비싸므로 update로 처리)
+  let maTickRaf = 0;
+  function updateMAsLive() {
+    if (!maSeries.size || !barsArr.length) return;
+    if (maTickRaf) return;
+    maTickRaf = requestAnimationFrame(() => {
+      maTickRaf = 0;
+      const bars = barsArr;
+      if (!bars.length) return;
+      const lastBar = bars[bars.length - 1];
+      for (const [key, s] of maSeries) {
+        const def = MA_DEFS.find(d => d.key === key);
+        if (!def) continue;
+        // 200주선은 주봉이 마감될 때만 의미 있게 변하므로 틱 갱신에서 제외
+        if (def.weeklySource && current.key === "1d") continue;
+        const data = computeMaLine(def, bars);
+        if (!data.length) continue;
+        const last = data[data.length - 1];
+        if (last.time !== lastBar.time) continue;
+        try { s.update(last); } catch {}
+        maLines.set(key, data);
+        maValues.set(key, last.value);
+      }
+      renderMaLegend();
+    });
   }
 
   // ── 탭 렌더링 ──
@@ -1582,6 +1932,20 @@
       stampUpdate();
       runAnalysis();
       restoreUserLines(tf.key);   // 저장된 사용자 선 복원
+
+      // 이평선 (일봉·주봉). 먼저 즉시 그릴 수 있는 선을 표시하고,
+      // 일봉의 200주선은 주봉 데이터가 도착한 뒤 추가로 얹는다.
+      if (MA_TIMEFRAMES.has(tf.key)) {
+        renderMAs(bars);
+        if (tf.key === "1d" && !weeklyBars && !weeklyFetchFailed) {
+          ensureWeeklyBars().then(() => {
+            if (seq !== loadSeq) return;   // 그 사이 다른 탭으로 전환됨
+            if (weeklyBars) renderMAs(barsArr.length ? barsArr : bars);
+          });
+        }
+      } else {
+        clearMAs();
+      }
     } catch (e) {
       if (seq !== loadSeq) return;
       showBanner("데이터를 불러오지 못했습니다 (" + (e && e.message || e) + "). " +
@@ -1636,7 +2000,16 @@
           barMap.set(incoming.time, incoming);
           upsertBar(incoming);
         }
-        if (k.x) runAnalysis();   // 봉 마감 시 지지/저항·추세선 재계산
+        if (k.x) {
+          runAnalysis();          // 봉 마감 시 지지/저항·추세선 재계산
+          if (MA_TIMEFRAMES.has(tf.key)) {
+            // 주봉이 마감되면 200주선도 새 값을 반영해야 하므로 캐시를 갱신
+            if (tf.key === "1w") weeklyBars = null;
+            renderMAs(barsArr);
+          }
+        } else {
+          updateMAsLive();        // 진행 중인 봉: 이평선 마지막 점만 갱신
+        }
         stampUpdate();
       }
     };
