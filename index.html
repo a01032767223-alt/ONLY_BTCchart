@@ -520,12 +520,18 @@
     localization: { priceFormatter: fmtPrice },
   });
 
+  // 가격축 범위를 잠시 지정할 때 쓰는 훅. 평소에는 기본 자동맞춤(orig)을 그대로 쓰고,
+  // 화면 복원 순간에만 저장해 둔 범위를 돌려줘 세로 위치까지 되살린다.
+  let pinnedPriceRange = null;
   const candles = chart.addCandlestickSeries({
     upColor: "#ef4444", downColor: "#3b82f6",
     borderUpColor: "#ef4444", borderDownColor: "#3b82f6",
     wickUpColor: "#ef4444", wickDownColor: "#3b82f6",
     // 가격 눈금 단위도 종목별로 잡아야 저가 코인의 움직임이 뭉개지지 않는다
     priceFormat: { type: "price", precision: coin.decimals, minMove: coin.minMove },
+    autoscaleInfoProvider: orig => pinnedPriceRange
+      ? { priceRange: { minValue: pinnedPriceRange.min, maxValue: pinnedPriceRange.max } }
+      : orig(),
   });
   const volume = chart.addHistogramSeries({
     priceFormat: { type: "volume" },
@@ -1277,6 +1283,77 @@
       b.classList.toggle("active", b.dataset.key === coin.key));
   }
 
+  // ══════════════════════════════════════════════════════════
+  //  화면 상태 기억 — 종목·시간봉마다 "보고 있던 화면"을 그대로 되살린다.
+  //  이전에는 불러올 때마다 전체 구간에 맞춰버려서 종목을 옮길 때마다
+  //  확대와 위치를 다시 잡아야 했다. 이제 가로(확대·이동)는 물론
+  //  가격축을 손으로 조정한 경우 세로 범위까지 함께 복원한다.
+  // ══════════════════════════════════════════════════════════
+  const VIEW_KEY = "coinchart_view_v1";
+  let viewStore = {};
+  try { viewStore = JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch {}
+  const viewKeyFor = (tfKey, coinKey) => (coinKey || coin.key) + ":" + tfKey;
+
+  function captureView() {
+    try {
+      const lr = chart.timeScale().getVisibleLogicalRange();
+      if (!lr) return null;
+      const ps = candles.priceScale();
+      // autoScale이 꺼져 있다 = 사용자가 가격축을 직접 조정했다는 뜻
+      const manual = ps.options().autoScale === false;
+      const v = { from: lr.from, to: lr.to, manual };
+      if (manual) {
+        const h = chart.paneSize().height;
+        const top = candles.coordinateToPrice(0);
+        const bot = candles.coordinateToPrice(h);
+        if (Number.isFinite(top) && Number.isFinite(bot) && top !== bot) {
+          v.max = Math.max(top, bot);
+          v.min = Math.min(top, bot);
+        } else v.manual = false;
+      }
+      return v;
+    } catch { return null; }
+  }
+
+  function saveViewNow() {
+    const v = captureView();
+    if (!v) return;
+    viewStore[viewKeyFor(current.key)] = v;
+    try { localStorage.setItem(VIEW_KEY, JSON.stringify(viewStore)); } catch {}
+  }
+  let viewSaveTimer = 0;
+  function scheduleSaveView() {
+    clearTimeout(viewSaveTimer);
+    viewSaveTimer = setTimeout(saveViewNow, 400);   // 조작이 멈춘 뒤에만 저장
+  }
+
+  // 저장된 화면이 있으면 복원하고, 없으면 전체 구간에 맞춘다.
+  function restoreView(tfKey) {
+    const v = viewStore[viewKeyFor(tfKey)];
+    const ts = chart.timeScale();
+    const ps = candles.priceScale();
+    if (!v || !Number.isFinite(v.from) || !Number.isFinite(v.to) || v.to <= v.from) {
+      ps.applyOptions({ autoScale: true });
+      ts.fitContent();
+      return false;
+    }
+    if (v.manual && Number.isFinite(v.min) && Number.isFinite(v.max)) {
+      // 세로 범위 복원: 저장 범위를 잠시 강제한 뒤 수동 모드로 고정하고 훅을 푼다.
+      // 이렇게 해야 복원 직후부터 사용자가 다시 자유롭게 조정할 수 있다.
+      pinnedPriceRange = { min: v.min, max: v.max };
+      ps.applyOptions({ autoScale: true });
+      try { ts.setVisibleLogicalRange({ from: v.from, to: v.to }); } catch {}
+      requestAnimationFrame(() => {
+        ps.applyOptions({ autoScale: false });
+        pinnedPriceRange = null;
+      });
+    } else {
+      ps.applyOptions({ autoScale: true });
+      try { ts.setVisibleLogicalRange({ from: v.from, to: v.to }); } catch {}
+    }
+    return true;
+  }
+
   // ── 탭 렌더링 ──
   const nav = $("tabs");
   TIMEFRAMES.forEach(tf => {
@@ -1800,7 +1877,10 @@
   });
 
   // 차트 이동·확대 시 핸들 위치 동기화
-  chart.timeScale().subscribeVisibleLogicalRangeChange(() => scheduleHandles());
+  chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+    scheduleHandles();
+    scheduleSaveView();   // 확대·이동이 멈추면 현재 화면을 기억
+  });
 
   // ── 그리는 중 미리보기 (프레임당 1회) ──
   let previewRaf = 0, previewPt = null;
@@ -2062,7 +2142,7 @@
       barMap = new Map(bars.map(b => [tf.aggregateYear ? b.year : b.time, b]));
       chart.applyOptions({ timeScale: { timeVisible: !!tf.intraday, secondsVisible: false } });
       applyBars(bars);
-      chart.timeScale().fitContent();
+      restoreView(tf.key);   // 이 종목·시간봉에서 보던 화면 복원 (없으면 전체 맞춤)
 
       const last = bars[bars.length - 1];
       if (last) updatePrice(last.close);
@@ -2165,6 +2245,7 @@
   // ── 종목 전환 ──
   function switchCoin(c) {
     if (c.key === coin.key) return;
+    saveViewNow();          // 떠나기 전 지금 보던 화면을 확정 저장
     coin = c;
     try { localStorage.setItem(LAST_SYMBOL_KEY, c.key); } catch {}
     // 이전 종목의 흔적을 모두 지운다. 하나라도 남으면 가격대가 전혀 다른
@@ -2185,6 +2266,7 @@
   // ── 탭 전환 ──
   function switchTimeframe(tf) {
     if (tf.key === current.key) return;
+    saveViewNow();
     current = tf;
     // 다음에 앱을 다시 열 때 이 시간봉으로 시작하도록 기억
     try { localStorage.setItem(LAST_TF_KEY, tf.key); } catch {}
@@ -2195,6 +2277,11 @@
   $("ai-close").addEventListener("click", () => { $("ai-panel").style.display = "none"; });
 
   // ── 시작 ──
+  // 앱을 닫거나 배경으로 보낼 때도 마지막 화면을 남긴다 (디바운스가 못 미친 경우 대비)
+  window.addEventListener("pagehide", saveViewNow);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") saveViewNow();
+  });
   applyCoinChrome();
   loadTimeframe(current).then(() => connectWS(current));
 })();
