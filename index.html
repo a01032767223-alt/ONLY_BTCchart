@@ -192,17 +192,17 @@
   /* ── RSI 보조 지표 창 ── */
   #rsi-wrap {
     position: relative;
-    height: 168px;
+    height: 260px;
     flex: 0 0 auto;
     border-top: 1px solid var(--border);
     display: none;
   }
   #rsi-wrap.on { display: block; }
-  #rsi { position: absolute; top: 24px; left: 0; right: 0; bottom: 0; }
+  #rsi { position: absolute; top: 28px; left: 0; right: 0; bottom: 0; }
   /* 창 높이 조절 손잡이 — 위아래로 끌어 원하는 간격으로 맞춘다.
      손가락으로 잡아야 하므로 높이를 24px로 넉넉히 두고, 눌린 상태를 색으로 알린다. */
   #rsi-grip {
-    position: absolute; top: 0; left: 0; right: 0; height: 24px; z-index: 7;
+    position: absolute; top: 0; left: 0; right: 0; height: 28px; z-index: 7;
     cursor: ns-resize; touch-action: none; user-select: none;
     display: flex; align-items: center; justify-content: center; gap: 8px;
     background: rgba(139,147,167,.06);
@@ -223,7 +223,7 @@
     pointer-events: none;
   }
   #rsi-info {
-    position: absolute; top: 30px; left: 10px; z-index: 4;
+    position: absolute; top: 34px; left: 10px; z-index: 4;
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
     font-size: 11px; color: var(--muted);
     pointer-events: none;
@@ -256,7 +256,7 @@
   .toggle.on-rsi { color: #e879f9; background: rgba(232,121,249,.1); border-color: rgba(232,121,249,.38); }
 
   @media (max-width: 430px) {
-    #rsi-wrap { height: 142px; }
+    #rsi-wrap { height: 240px; }
     #rsi-info { font-size: 10px; gap: 6px; }
   }
 
@@ -1491,7 +1491,10 @@
   const RSI_KEY = "btcchart_rsi_on";
   const RSI_PERIOD_KEY = "btcchart_rsi_period";
   const RSI_HEIGHT_KEY = "btcchart_rsi_height";
-  const RSI_DEFAULT_HEIGHT = 168;
+  // 기본 높이: 화면 세로의 38% (200~340px). 작은 화면에서도 과매수/과매도 구간이
+  // 눈에 들어오려면 이 정도는 필요하다. 저장된 값이 있으면 그쪽이 우선한다.
+  const rsiDefaultHeight = () =>
+    Math.max(200, Math.min(340, Math.round(window.innerHeight * 0.38)));
   const RSI_COLOR = "#e879f9";
   const DIV_BEAR = "#f43f5e";   // 약세(하락) 다이버전스
   const DIV_BULL = "#14b8a6";   // 강세(상승) 다이버전스
@@ -1795,16 +1798,17 @@
     const wrapH = $("rsi-wrap").getBoundingClientRect().height;
     const chartH = $("chart-wrap").getBoundingClientRect().height;
     const room = wrapH + chartH - 140;
-    const max = Math.max(120, Math.min(Math.round(window.innerHeight * 0.65), Math.round(room)));
+    const max = Math.max(120, Math.min(Math.round(window.innerHeight * 0.75), Math.round(room)));
     return Math.max(100, Math.min(max, Math.round(h)));
   }
   function applyRSIHeight(h) {
     $("rsi-wrap").style.height = clampRSIHeight(h) + "px";
   }
-  try {
-    const savedH = parseInt(localStorage.getItem(RSI_HEIGHT_KEY), 10);
-    if (Number.isFinite(savedH)) applyRSIHeight(savedH);
-  } catch {}
+  (() => {
+    let savedH = NaN;
+    try { savedH = parseInt(localStorage.getItem(RSI_HEIGHT_KEY), 10); } catch {}
+    applyRSIHeight(Number.isFinite(savedH) ? savedH : rsiDefaultHeight());
+  })();
   (() => {
     const grip = $("rsi-grip");
     const hint = grip.querySelector(".hint");
@@ -1835,38 +1839,44 @@
       scheduleHandles();   // 위 차트가 줄었으므로 그린 선의 조작 핸들 위치 재계산
     };
     const reset = () => {
-      applyRSIHeight(RSI_DEFAULT_HEIGHT);
-      try { localStorage.setItem(RSI_HEIGHT_KEY, String(RSI_DEFAULT_HEIGHT)); } catch {}
+      applyRSIHeight(rsiDefaultHeight());
+      try { localStorage.setItem(RSI_HEIGHT_KEY, String(rsiDefaultHeight())); } catch {}
       scheduleHandles();
     };
 
-    // 포인터 이벤트를 우선 쓰고, 지원하지 않는 환경에서는 터치로 대체한다
-    if (window.PointerEvent) {
-      grip.addEventListener("pointerdown", e => {
-        begin(e.clientY);
-        try { grip.setPointerCapture(e.pointerId); } catch {}
-        e.preventDefault();
-      });
-      grip.addEventListener("pointermove", e => { if (active) { move(e.clientY); e.preventDefault(); } });
-      grip.addEventListener("pointerup", end);
-      grip.addEventListener("pointercancel", end);
-    } else {
-      grip.addEventListener("touchstart", e => {
-        if (!e.touches[0]) return;
-        begin(e.touches[0].clientY);
-        e.preventDefault();
-      }, { passive: false });
-      grip.addEventListener("touchmove", e => {
-        if (!active || !e.touches[0]) return;
-        move(e.touches[0].clientY);
-        e.preventDefault();
-      }, { passive: false });
-      grip.addEventListener("touchend", end);
-      grip.addEventListener("touchcancel", end);
-      grip.addEventListener("mousedown", e => { begin(e.clientY); e.preventDefault(); });
-      window.addEventListener("mousemove", e => { if (active) move(e.clientY); });
-      window.addEventListener("mouseup", end);
-    }
+    // 이동·종료는 문서 전체에서 받는다.
+    // setPointerCapture가 동작하지 않는 브라우저(구형 iOS 등)에서도 손가락이
+    // 손잡이 밖으로 나가는 순간 드래그가 끊기지 않도록 하기 위한 안전장치다.
+    // 포인터와 터치 이벤트를 모두 걸어 두되, 같은 좌표로 같은 계산을 하므로
+    // 두 이벤트가 함께 들어와도 결과는 달라지지 않는다.
+    const startFrom = y => { begin(y); };
+
+    grip.addEventListener("pointerdown", e => {
+      startFrom(e.clientY);
+      try { grip.setPointerCapture(e.pointerId); } catch {}
+      e.preventDefault();
+    });
+    grip.addEventListener("touchstart", e => {
+      if (!e.touches[0]) return;
+      startFrom(e.touches[0].clientY);
+      e.preventDefault();
+    }, { passive: false });
+    grip.addEventListener("mousedown", e => { startFrom(e.clientY); e.preventDefault(); });
+
+    document.addEventListener("pointermove", e => {
+      if (!active) return;
+      move(e.clientY);
+      e.preventDefault();
+    }, { passive: false });
+    document.addEventListener("touchmove", e => {
+      if (!active || !e.touches[0]) return;
+      move(e.touches[0].clientY);
+      e.preventDefault();        // 창을 끄는 동안 페이지가 함께 밀리지 않게
+    }, { passive: false });
+    document.addEventListener("mousemove", e => { if (active) move(e.clientY); });
+
+    ["pointerup", "pointercancel", "touchend", "touchcancel", "mouseup"]
+      .forEach(ev => document.addEventListener(ev, end));
 
     // 두 번 누르면 기본 높이로 (모바일은 dblclick이 안 오는 경우가 있어 직접 판정)
     grip.addEventListener("dblclick", reset);
@@ -1874,6 +1884,12 @@
       if (moved) { lastTap = 0; return; }   // 끌었던 동작은 탭으로 세지 않는다
       const now = Date.now();
       if (now - lastTap < 320) { reset(); lastTap = 0; } else lastTap = now;
+    });
+
+    // 화면 회전·창 크기 변경 시 한도를 다시 적용 (위 차트가 사라지는 것을 방지)
+    window.addEventListener("resize", () => {
+      if (!showRSI) return;
+      applyRSIHeight($("rsi-wrap").getBoundingClientRect().height);
     });
   })();
 
