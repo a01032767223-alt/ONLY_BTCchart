@@ -155,8 +155,26 @@
 
   .sep { width: 1px; height: 18px; background: var(--border); margin: 0 8px; flex-shrink: 0; }
   .toggle { font-size: 12px; }
-  .toggle.on-sr { color: #22c55e; background: rgba(34,197,94,.08); border-color: rgba(34,197,94,.3); }
-  .toggle.on-tr { color: #f59e0b; background: rgba(245,158,11,.08); border-color: rgba(245,158,11,.3); }
+  .toggle.on-sr { color: #22c55e; background: rgba(34,197,94,.16); border-color: rgba(34,197,94,.55); }
+  .toggle.on-tr { color: #f59e0b; background: rgba(245,158,11,.16); border-color: rgba(245,158,11,.55); }
+
+  /* 자동 분석 그룹: 지금 켜져 있는 항목이 한눈에 들어오도록 항목마다 고유색 + 표시등.
+     꺼진 항목은 회색 점만 흐리게 남아 "끌 수 있는 항목"이라는 것도 함께 알린다. */
+  .tool-group.auto .toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    border-color: rgba(139,147,167,.2);
+  }
+  .tool-group.auto .toggle::before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%;
+    background: currentColor; opacity: .25;
+    transition: opacity .12s, box-shadow .12s;
+  }
+  .tool-group.auto .toggle[aria-pressed="true"] {
+    font-weight: 700;
+  }
+  .tool-group.auto .toggle[aria-pressed="true"]::before {
+    opacity: 1; box-shadow: 0 0 7px currentColor;
+  }
   .toggle.on-draw { color: #c084fc; background: rgba(192,132,252,.15); border-color: rgba(192,132,252,.5); }
   .toggle.on-ai { color: var(--btc); border-color: rgba(247,147,26,.35); background: rgba(247,147,26,.08); }
 
@@ -253,7 +271,7 @@
   #rsi-info .div.bear { color: #f43f5e; background: rgba(244,63,94,.12); border-color: rgba(244,63,94,.4); }
   #rsi-info .div.bull { color: #14b8a6; background: rgba(20,184,166,.12); border-color: rgba(20,184,166,.4); }
   #rsi-info .div.hidden { opacity: .85; border-style: dashed; }
-  .toggle.on-rsi { color: #e879f9; background: rgba(232,121,249,.1); border-color: rgba(232,121,249,.38); }
+  .toggle.on-rsi { color: #e879f9; background: rgba(232,121,249,.18); border-color: rgba(232,121,249,.6); }
 
   @media (max-width: 430px) {
     #rsi-wrap { height: 240px; }
@@ -488,7 +506,7 @@
 <div id="rsi-wrap" aria-label="RSI 보조 지표">
   <div id="rsi-grip" role="separator" aria-label="RSI 창 높이 조절" title="위아래로 끌어 높이 조절 (두 번 누르면 기본값)"><span class="hint"></span></div>
   <div id="rsi"></div>
-  <div id="rsi-info"></div>
+  <div id="rsi-info" title="오른쪽 축을 위아래로 끌면 간격 조절 · 축을 두 번 누르면 0~100 기본값"></div>
 </div>
 
 <div id="ma-legend" aria-label="이동평균선 (탭하여 켜고 끄기)"></div>
@@ -1559,7 +1577,14 @@
       timeScale: { visible: false, borderVisible: false, rightOffset: 4 },
       rightPriceScale: { borderColor: "#232838", scaleMargins: { top: 0.12, bottom: 0.12 } },
       localization: { priceFormatter: v => v.toFixed(1) },
-      handleScale: { axisPressedMouseMove: { price: false } },
+      // 오른쪽 축을 위아래로 끌면 RSI 간격이 벌어지고 좁혀진다 (위 캔들 차트와 동일).
+      // 축을 두 번 누르면 기본 0~100 자동 스케일로 되돌아간다.
+      handleScale: {
+        axisPressedMouseMove: { price: true, time: true },
+        axisDoubleClickReset: { price: true, time: true },
+      },
+      handleScroll: { vertTouchDrag: true, horzTouchDrag: true,
+                      pressedMouseMove: true, mouseWheel: true },
     });
 
     rsiSeries = rsiChart.addLineSeries({
@@ -1567,7 +1592,9 @@
       priceLineVisible: false, lastValueVisible: true,
       crosshairMarkerVisible: true,
       priceFormat: { type: "price", precision: 1, minMove: 0.1 },
-      // 0~100 고정: 자동 스케일이면 구간마다 눈금이 달라져 과매수/과매도 위치가 흔들린다
+      // 0~100 고정: 눈금이 구간마다 달라지면 과매수/과매도 위치가 흔들린다.
+      // 단 이 값은 "자동 스케일" 상태에서만 쓰인다. 사용자가 오른쪽 축을 끌어
+      // 간격을 조절하면 라이브러리가 자동 스케일을 꺼서 그 범위가 그대로 유지된다.
       autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
     });
 
@@ -2024,6 +2051,7 @@
   const btnRSI = document.createElement("button");
   btnRSI.className = "toggle";
   btnRSI.textContent = "RSI";
+  btnRSI.setAttribute("aria-pressed", "false");
   btnRSI.title = "RSI · RSI 추세선 · 다이버전스 (창 높이·기간 조절 가능)";
   btnRSI.addEventListener("click", () => {
     showRSI = !showRSI;
