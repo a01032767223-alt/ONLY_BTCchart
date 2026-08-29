@@ -266,6 +266,10 @@
     padding: 2px 8px; border-radius: 999px; touch-action: manipulation;
   }
   #rsi-info .guide:hover { background: rgba(232,121,249,.25); }
+  #rsi-info .guide.ai {
+    background: rgba(247,147,26,.12); border-color: rgba(247,147,26,.45); color: var(--btc);
+  }
+  #rsi-info .guide.ai:hover { background: rgba(247,147,26,.26); }
   #rsi-info .per b {
     min-width: 18px; text-align: center; color: var(--text); font-weight: 600;
     font-family: var(--mono); font-variant-numeric: tabular-nums; cursor: pointer;
@@ -376,15 +380,23 @@
     flex-shrink: 0;
   }
   #ai-head {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 8px 16px 0;
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 10px 16px;
+    /* 설명이 길어 스크롤해도 닫기 버튼이 늘 보이도록 상단에 고정 */
+    position: sticky; top: 0; z-index: 3;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
   }
   #ai-src { font-size: 11px; color: var(--btc); font-weight: 700; }
   #ai-close {
-    background: none; border: none; color: var(--muted);
-    font-size: 14px; cursor: pointer; padding: 2px 6px;
+    flex: none;
+    background: rgba(139,147,167,.16); border: 1px solid rgba(139,147,167,.4);
+    color: var(--text); font-family: inherit; font-size: 12px; font-weight: 600;
+    cursor: pointer; padding: 7px 14px; border-radius: 8px; line-height: 1;
+    min-height: 34px; touch-action: manipulation;
   }
-  #ai-close:hover { color: var(--text); }
+  #ai-close:hover { background: rgba(139,147,167,.3); border-color: rgba(139,147,167,.65); }
+  #ai-close:active { transform: scale(.96); }
   #ai-body {
     padding: 8px 16px 12px;
     font-size: 13px; line-height: 1.7; color: var(--text);
@@ -525,7 +537,7 @@
 <div id="ai-panel">
   <div id="ai-head">
     <span id="ai-src">AI 해설</span>
-    <button id="ai-close" aria-label="해설 닫기">✕</button>
+    <button id="ai-close" aria-label="해설 닫기">✕ 닫기</button>
   </div>
   <div id="ai-body"></div>
 </div>
@@ -1811,12 +1823,14 @@
         `<b data-per="reset" title="눌러서 기본값(${RSI_DEFAULT_PERIOD})으로">${rsiPeriod}</b>` +
         `<button data-per="+" aria-label="기간 늘리기">+</button>` +
       `</span>` +
-      `<button class="guide" data-guide="1">쉬운 설명</button>`;
+      `<button class="guide" data-guide="1">쉬운 설명</button>` +
+      `<button class="guide ai" data-ai="1">AI 분석</button>`;
   }
 
   // 컨트롤은 매 렌더마다 다시 그려지므로 위임 방식으로 한 번만 연결한다
   $("rsi-info").addEventListener("click", e => {
     if (e.target.closest("[data-guide]")) { showRSIGuide(); return; }
+    if (e.target.closest("[data-ai]")) { showRSIAI(); return; }
     const el = e.target.closest("[data-per]");
     if (!el) return;
     const act = el.dataset.per;
@@ -2028,6 +2042,84 @@
     return L.join("\n");
   }
 
+  // ── RSI 상황 AI 분석 ──
+  // 값 하나가 아니라 최근 추이·추세선·다이버전스·주변 지지저항을 함께 넘긴다.
+  // Claude API에 닿지 않는 환경(GitHub Pages 등)에서는 규칙 기반 설명으로 대체한다.
+  function buildRSIContext() {
+    if (rsiLast == null || !lastRSI) return null;
+    const bars = barsArr.slice(-40);
+    return {
+      종목: `${coin.name}(${coin.key}/USDT)`,
+      시간봉: current.label,
+      RSI기간: rsiPeriod,
+      현재RSI: +rsiLast.toFixed(1),
+      최근RSI추이: lastRSI.series,
+      현재가: bars.length ? bars[bars.length - 1].close : null,
+      최근종가: bars.map(b => b.close),
+      RSI추세선: lastRSI.notes && lastRSI.notes.length ? lastRSI.notes : null,
+      다이버전스: lastRSI.div ? {
+        유형: lastRSI.div.label,
+        설명: lastRSI.div.desc,
+        RSI: [+lastRSI.div.rA.toFixed(1), +lastRSI.div.rB.toFixed(1)],
+        가격: [lastRSI.div.A.price, lastRSI.div.B.price],
+      } : null,
+      가까운지지: lastAnalysis && lastAnalysis.sup
+        ? { 가격: lastAnalysis.sup.price, 확인횟수: lastAnalysis.sup.touches } : null,
+      가까운저항: lastAnalysis && lastAnalysis.res
+        ? { 가격: lastAnalysis.res.price, 확인횟수: lastAnalysis.res.touches } : null,
+    };
+  }
+
+  async function showRSIAI() {
+    const panel = $("ai-panel");
+    const body = $("ai-body");
+    panel.style.display = "block";
+    panel.scrollTop = 0;
+    $("ai-src").textContent = `RSI AI 분석 · ${coin.name} ${current.label}`;
+
+    const ctx = buildRSIContext();
+    if (!ctx) {
+      body.textContent = "아직 RSI 데이터가 없습니다. RSI 창을 켜고 차트가 불러와진 뒤 다시 눌러주세요.";
+      return;
+    }
+    body.textContent = "RSI 상황을 분석하는 중…";
+
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [{
+            role: "user",
+            content: "다음은 암호화폐 차트의 RSI 자동 분석 결과입니다. "
+              + "투자를 막 시작한 사람이 읽는다고 가정하고, 한국어로 6~9문장의 해설을 쓰세요.\n"
+              + "다음 순서로 쓰되 소제목이나 목록 없이 이어지는 문장으로 쓰세요.\n"
+              + "1) 지금 RSI 값이 어떤 상태이고 최근 추이가 오르는 중인지 내리는 중인지\n"
+              + "2) RSI 추세선과 다이버전스가 있다면 그것이 초보자에게 무슨 뜻인지 쉬운 말로\n"
+              + "3) 앞으로 어떤 수치나 가격대를 지켜보면 되는지 (지지·저항선과 연결해서)\n"
+              + "4) 이 신호의 한계와 주의점\n"
+              + "규칙: 매수·매도를 지시하거나 권유하지 말고, 목표가나 수익률을 예측하지 마세요. "
+              + "전문용어를 쓰면 바로 뒤에 쉬운 설명을 붙이세요. "
+              + "마지막 문장은 반드시 투자 판단의 책임이 본인에게 있다는 내용으로 끝내세요.\n"
+              + "데이터: " + JSON.stringify(ctx),
+          }],
+        }),
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
+      if (!text) throw new Error("빈 응답");
+      $("ai-src").textContent = `RSI AI 분석 · Claude · ${coin.name} ${current.label}`;
+      body.textContent = text;
+    } catch {
+      $("ai-src").textContent = "RSI 설명 (Claude API 미연결 환경)";
+      body.textContent = buildRSIGuide();
+    }
+  }
+
   function showRSIGuide() {
     const panel = $("ai-panel");
     panel.style.display = "block";
@@ -2127,7 +2219,11 @@
       ]));
     }
 
-    lastRSI = { value: rsiLast, div, notes: tlNotes };
+    // 최근 흐름까지 남겨 둔다 (AI 분석에 값 하나가 아니라 추이를 넘기기 위해)
+    lastRSI = {
+      value: rsiLast, div, notes: tlNotes,
+      series: pts.slice(-40).map(p => +p.value.toFixed(1)),
+    };
     $("rsi-info").innerHTML = rsiInfoHTML(rsiLast, tlNotes.join("  "), div);
   }
 
