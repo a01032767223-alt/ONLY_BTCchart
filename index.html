@@ -189,6 +189,41 @@
   }
   #draw-hint:empty { display: none; }
 
+  /* ── RSI 보조 지표 창 ── */
+  #rsi-wrap {
+    position: relative;
+    height: 148px;
+    flex: 0 0 auto;
+    border-top: 1px solid var(--border);
+    display: none;
+  }
+  #rsi-wrap.on { display: block; }
+  #rsi { position: absolute; inset: 0; }
+  #rsi-info {
+    position: absolute; top: 5px; left: 10px; z-index: 4;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    font-size: 11px; color: var(--muted);
+    pointer-events: none;
+  }
+  #rsi-info .nm { color: #e879f9; font-weight: 600; }
+  #rsi-info .val { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text); }
+  #rsi-info .zone.hot { color: #f43f5e; }
+  #rsi-info .zone.cold { color: #22d3ee; }
+  #rsi-info .tl { font-family: var(--mono); }
+  #rsi-info .div {
+    padding: 1.5px 7px; border-radius: 999px; font-weight: 600;
+    border: 1px solid transparent;
+  }
+  #rsi-info .div.bear { color: #f43f5e; background: rgba(244,63,94,.12); border-color: rgba(244,63,94,.4); }
+  #rsi-info .div.bull { color: #14b8a6; background: rgba(20,184,166,.12); border-color: rgba(20,184,166,.4); }
+  #rsi-info .div.hidden { opacity: .85; border-style: dashed; }
+  .toggle.on-rsi { color: #e879f9; background: rgba(232,121,249,.1); border-color: rgba(232,121,249,.38); }
+
+  @media (max-width: 430px) {
+    #rsi-wrap { height: 118px; }
+    #rsi-info { font-size: 10px; gap: 6px; }
+  }
+
   .conn {
     margin-left: auto;
     display: flex; align-items: center; gap: 6px;
@@ -412,6 +447,11 @@
   <div id="loading">차트 데이터를 불러오는 중…</div>
   <div id="banner"></div>
   <div id="draw-hint"></div>
+</div>
+
+<div id="rsi-wrap" aria-label="RSI 보조 지표">
+  <div id="rsi"></div>
+  <div id="rsi-info"></div>
 </div>
 
 <div id="ma-legend" aria-label="이동평균선 (탭하여 켜고 끄기)"></div>
@@ -752,6 +792,7 @@
     priceLines = [];
     trendSeries.forEach(s => { try { chart.removeSeries(s); } catch {} });
     trendSeries = [];
+    clearPriceDivLines();   // 가격 창에 그려진 다이버전스 연결선
   }
 
   function updateSRFooter(sup, res, price) {
@@ -773,6 +814,7 @@
     clearAnalysis();
     const bars = [...barMap.values()].sort((a, b) => a.time - b.time);
     barsArr = bars;   // 자석 스냅 계산에 사용
+    runRSI(bars);     // RSI·RSI 추세선·다이버전스 (켜져 있을 때만 동작)
     // 기준가는 "차트에 실제로 그려진 마지막 봉의 종가"를 쓴다.
     // 헤더의 miniTicker 값(lastPrice)을 쓰면, 두 피드가 어긋났을 때
     // 선은 캔들 시리즈 좌표에 그려지는데 기준만 다른 곳을 가리켜
@@ -1397,6 +1439,421 @@
     runAnalysis();
   });
   grpAuto.appendChild(btnTR);
+
+  // ══════════════════════════════════════════════════════════
+  //  RSI(14) 보조 지표 + RSI 추세선 + 다이버전스 탐지
+  //  · 별도의 차트 인스턴스를 아래에 두고 가로 축(로지컬 범위)을 양방향 동기화한다.
+  //    lightweight-charts 4.x에는 패널(pane) 기능이 없어 이 방식이 유일한 해법이다.
+  //  · 인덱스가 어긋나면 두 창의 봉이 따로 놀기 때문에, 계산이 불가능한 앞쪽
+  //    14봉은 값 없는 whitespace 점으로 채워 넣어 봉 번호를 정확히 맞춘다.
+  //  · 다이버전스는 "가격의 스윙"과 "그 시점 RSI"를 비교한다. RSI 자체의 스윙을
+  //    쓰면 가격과 다른 지점을 짚어 실제와 어긋나므로 반드시 가격 기준으로 잡는다.
+  // ══════════════════════════════════════════════════════════
+  const RSI_PERIOD = 14;
+  const RSI_KEY = "btcchart_rsi_on";
+  const RSI_COLOR = "#e879f9";
+  const DIV_BEAR = "#f43f5e";   // 약세(하락) 다이버전스
+  const DIV_BULL = "#14b8a6";   // 강세(상승) 다이버전스
+
+  let showRSI = false;
+  try { showRSI = localStorage.getItem(RSI_KEY) === "1"; } catch {}
+
+  let rsiChart = null, rsiSeries = null;
+  let rsiTrendSeries = [];    // RSI 창의 자동 추세선
+  let rsiDivSeries = [];      // RSI 창의 다이버전스 연결선
+  let priceDivSeries = [];    // 가격 창의 다이버전스 연결선
+  let rsiLast = null;         // 마지막 RSI 값
+  let lastRSI = null;         // 마지막 RSI 분석 결과 (값·추세선·다이버전스)
+  let rsiSyncing = false;
+
+  // 와일더 방식 RSI. 첫 구간은 단순평균, 이후는 지수 평활(1/period).
+  function calcRSI(bars, period) {
+    const out = [];
+    if (bars.length < period + 1) return out;
+    let ag = 0, al = 0;
+    for (let i = 1; i <= period; i++) {
+      const d = bars[i].close - bars[i - 1].close;
+      if (d >= 0) ag += d; else al -= d;
+    }
+    ag /= period; al /= period;
+    const val = () => al === 0 ? 100 : ag === 0 ? 0 : 100 - 100 / (1 + ag / al);
+    out.push({ i: period, time: bars[period].time, value: val() });
+    for (let i = period + 1; i < bars.length; i++) {
+      const d = bars[i].close - bars[i - 1].close;
+      ag = (ag * (period - 1) + (d > 0 ? d : 0)) / period;
+      al = (al * (period - 1) + (d < 0 ? -d : 0)) / period;
+      out.push({ i, time: bars[i].time, value: val() });
+    }
+    return out;
+  }
+
+  // RSI 창 생성 (처음 켤 때 1회)
+  function ensureRSIChart() {
+    if (rsiChart) return rsiChart;
+    rsiChart = LightweightCharts.createChart($("rsi"), {
+      layout: {
+        background: { type: "solid", color: "#0c0e14" },
+        textColor: "#8b93a7",
+        fontFamily: "'SF Mono', Consolas, monospace",
+        fontSize: 10,
+      },
+      grid: {
+        vertLines: { color: "rgba(35,40,56,.35)" },
+        horzLines: { color: "rgba(35,40,56,.25)" },
+      },
+      crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal,
+        vertLine: { color: "#8b93a7", width: 1, style: 2, labelVisible: false },
+        horzLine: { color: "#8b93a7", width: 1, style: 2, labelBackgroundColor: "#232838" },
+      },
+      // 시간축은 위 차트의 것을 공유한다 (중복 표시로 세로 공간을 낭비하지 않음)
+      timeScale: { visible: false, borderVisible: false, rightOffset: 4 },
+      rightPriceScale: { borderColor: "#232838", scaleMargins: { top: 0.12, bottom: 0.12 } },
+      localization: { priceFormatter: v => v.toFixed(1) },
+      handleScale: { axisPressedMouseMove: { price: false } },
+    });
+
+    rsiSeries = rsiChart.addLineSeries({
+      color: RSI_COLOR, lineWidth: 2,
+      priceLineVisible: false, lastValueVisible: true,
+      crosshairMarkerVisible: true,
+      priceFormat: { type: "price", precision: 1, minMove: 0.1 },
+      // 0~100 고정: 자동 스케일이면 구간마다 눈금이 달라져 과매수/과매도 위치가 흔들린다
+      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
+    });
+
+    [
+      { price: 70, color: "rgba(244,63,94,.55)", title: "70" },
+      { price: 50, color: "rgba(139,147,167,.35)", title: "50" },
+      { price: 30, color: "rgba(34,211,238,.55)", title: "30" },
+    ].forEach(l => rsiSeries.createPriceLine({
+      price: l.price, color: l.color, lineWidth: 1,
+      lineStyle: l.price === 50 ? LightweightCharts.LineStyle.Dotted
+                                : LightweightCharts.LineStyle.Dashed,
+      axisLabelVisible: true, title: l.title,
+    }));
+
+    // 가로 축 양방향 동기화 (재귀 호출 방지 플래그 필수)
+    chart.timeScale().subscribeVisibleLogicalRangeChange(r => {
+      if (!r || rsiSyncing || !rsiChart) return;
+      rsiSyncing = true;
+      try { rsiChart.timeScale().setVisibleLogicalRange(r); } catch {}
+      rsiSyncing = false;
+    });
+    rsiChart.timeScale().subscribeVisibleLogicalRangeChange(r => {
+      if (!r || rsiSyncing) return;
+      rsiSyncing = true;
+      try { chart.timeScale().setVisibleLogicalRange(r); } catch {}
+      rsiSyncing = false;
+    });
+
+    let rW = 0, rH = 0, rRaf = 0;
+    new ResizeObserver(() => {
+      const el = $("rsi-wrap");
+      const w = el.clientWidth, h = el.clientHeight;
+      if ((w === rW && h === rH) || !w || !h) return;
+      rW = w; rH = h;
+      if (rRaf) return;
+      rRaf = requestAnimationFrame(() => {
+        rRaf = 0;
+        rsiChart.applyOptions({ width: w, height: h });
+        syncScaleWidth();
+      });
+    }).observe($("rsi-wrap"));
+
+    return rsiChart;
+  }
+
+  // 두 창의 가격축 폭을 맞춰야 세로선이 어긋나지 않는다.
+  // RSI는 두 자리 숫자라 축이 좁으므로 위 차트의 폭을 최소값으로 지정한다.
+  function syncScaleWidth() {
+    if (!rsiChart) return;
+    try {
+      const w = chart.priceScale("right").width();
+      if (w > 0) rsiChart.priceScale("right").applyOptions({ minimumWidth: w });
+    } catch {}
+  }
+
+  function clearRSIOverlays() {
+    rsiTrendSeries.forEach(s => { try { rsiChart.removeSeries(s); } catch {} });
+    rsiTrendSeries = [];
+    rsiDivSeries.forEach(s => { try { rsiChart.removeSeries(s); } catch {} });
+    rsiDivSeries = [];
+    clearPriceDivLines();
+  }
+  function clearPriceDivLines() {
+    priceDivSeries.forEach(s => { try { chart.removeSeries(s); } catch {} });
+    priceDivSeries = [];
+  }
+
+  // RSI 값 위에서 스윙 고점/저점 찾기 (가격 스윙 판정과 같은 방식)
+  function rsiPivots(pts, width) {
+    const highs = [], lows = [];
+    for (let k = width; k < pts.length - width; k++) {
+      let isH = true, isL = true;
+      for (let j = k - width; j <= k + width; j++) {
+        if (j === k) continue;
+        if (pts[j].value >= pts[k].value) isH = false;
+        if (pts[j].value <= pts[k].value) isL = false;
+        if (!isH && !isL) break;
+      }
+      if (isH) highs.push(pts[k]);
+      if (isL) lows.push(pts[k]);
+    }
+    return { highs, lows };
+  }
+
+  // RSI 추세선: 형성 구간을 관통하지 않는 선만 채택한다.
+  // 가격 추세선과 같은 철학 — 없는 추세를 그려 보여주는 것보다 생략이 안전하다.
+  // 형성 구간 이후(연장부)의 돌파는 역할 전환이므로 허용한다.
+  function rsiTrendline(pivots, pts, type, tol) {
+    if (pivots.length < 2 || !pts.length) return null;
+    const cand = pivots.slice(-6);
+    const lastI = pts[pts.length - 1].i;
+    const newestI = cand[cand.length - 1].i;
+    let best = null;
+    for (let a = 0; a < cand.length - 1; a++) {
+      for (let b = a + 1; b < cand.length; b++) {
+        const P = cand[a], Q = cand[b];
+        const span = Q.i - P.i;
+        if (span < 6) continue;
+        const slope = (Q.value - P.value) / span;
+        let ok = true, touches = 0;
+        for (const p of pts) {
+          if (p.i < P.i || p.i > Q.i) continue;
+          const lv = P.value + slope * (p.i - P.i);
+          const over = type === "res" ? p.value - lv : lv - p.value;
+          if (over > tol) { ok = false; break; }
+          if (Math.abs(p.value - lv) <= tol) touches++;
+        }
+        if (!ok) continue;
+        // 최근 스윙을 끝점으로 쓰는 선에 가산점 — 지금 유효한 추세를 우선한다
+        const score = touches * 2 + span * 0.04 + (Q.i === newestI ? 5 : 0);
+        if (!best || score > best.score) best = { P, Q, slope, touches, score };
+      }
+    }
+    if (!best) return null;
+    // 0/100을 벗어나기 직전에서 끊는다 (화면 밖으로 뻗어나가면 읽을 수 없다)
+    let endI = lastI;
+    for (let i = best.Q.i; i <= lastI; i++) {
+      const v = best.P.value + best.slope * (i - best.P.i);
+      if (v < 2 || v > 98) { endI = i; break; }
+    }
+    const endVal = best.P.value + best.slope * (endI - best.P.i);
+    const nowVal = best.P.value + best.slope * (lastI - best.P.i);
+    return { P: best.P, endI, endVal, nowVal, slope: best.slope, touches: best.touches };
+  }
+
+  // 가격 스윙과 그 시점 RSI를 비교해 다이버전스를 찾는다.
+  //  · 일반(regular): 추세 소진 신호  · 히든(hidden): 추세 지속 신호
+  //  · 마지막 스윙이 충분히 최근일 때만 인정한다 (오래된 신호는 이미 소화됨)
+  function findDivergence(bars, pts, width) {
+    if (pts.length < 10 || bars.length < 30) return null;
+    const rmap = new Map(pts.map(p => [p.i, p.value]));
+    const { highs, lows } = detectPivots(bars, width);
+    const lastIdx = bars.length - 1;
+    const freshWin = Math.max(10, width * 5);
+    const maxGap = 90, minGap = 5;
+    const found = [];
+
+    // 구간 극단값 — 두 스윙 중 하나는 최근 구간의 꼭짓점이어야 신호로 인정한다.
+    // 이 조건이 없으면 횡보 구간의 자잘한 봉우리끼리 엮여 다이버전스가 남발된다.
+    const win = bars.slice(-Math.min(bars.length, maxGap + freshWin));
+    const winMax = Math.max(...win.map(b => b.high));
+    const winMin = Math.min(...win.map(b => b.low));
+    // 최근 40봉 기준 추세 방향 (히든 다이버전스 판정용)
+    const ref = bars[Math.max(0, lastIdx - 40)].close;
+    const trend = (bars[lastIdx].close - ref) / ref;
+
+    const scan = (piv, kind) => {
+      const cand = piv.slice(-5);
+      for (let a = 0; a < cand.length - 1; a++) {
+        for (let b = a + 1; b < cand.length; b++) {
+          const A = cand[a], B = cand[b];
+          const gap = B.i - A.i;
+          if (gap < minGap || gap > maxGap) continue;
+          if (lastIdx - B.i > freshWin) continue;          // 신선도
+          // 일반형은 "구간의 꼭짓점"에서만 의미가 있다 (추세 소진 신호이므로).
+          // 히든형은 추세 한가운데서 나오는 지속 신호라 이 조건을 쓸 수 없어,
+          // 대신 실제로 그 방향의 추세가 진행 중인지를 따로 확인한다.
+          const extreme = kind === "high"
+            ? Math.max(A.price, B.price) >= winMax * 0.985
+            : Math.min(A.price, B.price) <= winMin * 1.015;
+          const rA = rmap.get(A.i), rB = rmap.get(B.i);
+          if (rA == null || rB == null) continue;
+          const dR = rB - rA;
+          const dP = (B.price - A.price) / A.price;
+          if (Math.abs(dP) < 0.008) continue;               // 가격 차이가 미미하면 무시
+          const reg = extreme && Math.abs(dR) >= 4;         // 일반형: 꼭짓점 + 최소 괴리
+          const hid = Math.abs(dR) >= 6 &&                  // 히든형: 큰 괴리 + 추세 확인
+            (kind === "high" ? trend < -0.01 : trend > 0.01);
+          if (kind === "high") {
+            if (dP > 0 && dR < 0 && rA >= 60 && reg)
+              found.push({ cls: "bear", regular: true, A, B, rA, rB, gap,
+                label: "하락(약세) 다이버전스", desc: "가격 고점 ↑ / RSI 고점 ↓" });
+            if (dP < 0 && dR > 0 && hid)
+              found.push({ cls: "bear", regular: false, A, B, rA, rB, gap,
+                label: "히든 약세 다이버전스", desc: "가격 고점 ↓ / RSI 고점 ↑ (하락 지속)" });
+          } else {
+            if (dP < 0 && dR > 0 && rA <= 40 && reg)
+              found.push({ cls: "bull", regular: true, A, B, rA, rB, gap,
+                label: "상승(강세) 다이버전스", desc: "가격 저점 ↓ / RSI 저점 ↑" });
+            if (dP > 0 && dR < 0 && hid)
+              found.push({ cls: "bull", regular: false, A, B, rA, rB, gap,
+                label: "히든 강세 다이버전스", desc: "가격 저점 ↑ / RSI 저점 ↓ (상승 지속)" });
+          }
+        }
+      }
+    };
+    scan(highs, "high");
+    scan(lows, "low");
+    if (!found.length) return null;
+    // 일반형 우선 → RSI 괴리가 큰 것 → 더 최근 것
+    found.sort((x, y) =>
+      (y.regular - x.regular) ||
+      (Math.abs(y.rB - y.rA) - Math.abs(x.rB - x.rA)) ||
+      (y.B.i - x.B.i));
+    return found[0];
+  }
+
+  function rsiInfoHTML(val, tl, div) {
+    if (val == null) return `<span class="nm">RSI(${RSI_PERIOD})</span><span>데이터 부족</span>`;
+    const zone = val >= 70 ? ["hot", "과매수"] : val <= 30 ? ["cold", "과매도"]
+               : val >= 50 ? ["", "중립(강)"] : ["", "중립(약)"];
+    let h = `<span class="nm">RSI(${RSI_PERIOD})</span>` +
+            `<span class="val">${val.toFixed(1)}</span>` +
+            `<span class="zone ${zone[0]}">${zone[1]}</span>`;
+    if (tl) h += `<span class="tl">${tl}</span>`;
+    if (div) h += `<span class="div ${div.cls}${div.regular ? "" : " hidden"}" ` +
+                  `title="${div.desc}">${div.label}</span>`;
+    return h;
+  }
+
+  // RSI 전체 계산 → 렌더 (시간봉 로드·봉 마감·토글 시)
+  function runRSI(bars) {
+    if (!showRSI) return;
+    ensureRSIChart();
+    clearRSIOverlays();
+    if (!bars || bars.length < RSI_PERIOD + 5) {
+      try { rsiSeries.setData([]); } catch {}
+      rsiLast = null;
+      $("rsi-info").innerHTML = rsiInfoHTML(null);
+      return;
+    }
+    const pts = calcRSI(bars, RSI_PERIOD);
+    // 앞쪽 봉은 whitespace로 채워 위 차트와 봉 번호를 일치시킨다
+    const data = bars.map((b, i) => i < RSI_PERIOD
+      ? { time: b.time }
+      : { time: b.time, value: pts[i - RSI_PERIOD].value });
+    rsiSeries.setData(data);
+    rsiLast = pts[pts.length - 1].value;
+    syncScaleWidth();
+    try {
+      const r = chart.timeScale().getVisibleLogicalRange();
+      if (r) { rsiSyncing = true; rsiChart.timeScale().setVisibleLogicalRange(r); rsiSyncing = false; }
+    } catch { rsiSyncing = false; }
+
+    // ① RSI 추세선 — 최근 구간만 본다 (오래된 스윙까지 이으면 의미가 흐려진다)
+    const win = pts.slice(-140);
+    const pw = Math.max(2, Math.round(current.width * 0.75));
+    const { highs: rh, lows: rl } = rsiPivots(win, pw);
+    const tlNotes = [];
+    [
+      { tl: rsiTrendline(rh, win, "res", 2.2), color: "#f59e0b", kind: "저항" },
+      { tl: rsiTrendline(rl, win, "sup", 2.2), color: "#22c55e", kind: "지지" },
+    ].forEach(({ tl, color, kind }) => {
+      if (!tl) return;
+      const t1 = bars[tl.P.i], t2 = bars[tl.endI];
+      if (!t1 || !t2 || t2.time <= t1.time) return;
+      const s = rsiChart.addLineSeries({
+        color, lineWidth: tl.touches >= 3 ? 2 : 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      });
+      s.setData([
+        { time: t1.time, value: tl.P.value },
+        { time: t2.time, value: tl.endVal },
+      ]);
+      rsiTrendSeries.push(s);
+      // 연장선이 0~100 밖으로 나가면 더 이상 읽을 의미가 없으므로 수치는 생략
+      if (tl.nowVal >= 0 && tl.nowVal <= 100) {
+        const gap = rsiLast - tl.nowVal;
+        tlNotes.push(`${kind}선 ${tl.nowVal.toFixed(0)}` +
+          `(${gap >= 0 ? "+" : ""}${gap.toFixed(1)})×${tl.touches}`);
+      }
+    });
+
+    // ② 다이버전스 — 가격 창과 RSI 창에 같은 두 지점을 이어 그린다
+    const div = findDivergence(bars, pts, current.width);
+    if (div) {
+      const color = div.cls === "bear" ? DIV_BEAR : DIV_BULL;
+      const style = div.regular ? LightweightCharts.LineStyle.Solid
+                                : LightweightCharts.LineStyle.Dotted;
+      const mk = (c, pts2) => {
+        const s = c.addLineSeries({
+          color, lineWidth: 2, lineStyle: style,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        });
+        s.setData(pts2);
+        return s;
+      };
+      priceDivSeries.push(mk(chart, [
+        { time: div.A.time, value: div.A.price },
+        { time: div.B.time, value: div.B.price },
+      ]));
+      rsiDivSeries.push(mk(rsiChart, [
+        { time: div.A.time, value: div.rA },
+        { time: div.B.time, value: div.rB },
+      ]));
+    }
+
+    lastRSI = { value: rsiLast, div, notes: tlNotes };
+    $("rsi-info").innerHTML = rsiInfoHTML(rsiLast, tlNotes.join("  "), div);
+  }
+
+  // 진행 중인 봉: 마지막 점만 갱신 (전체 재계산·재렌더는 봉 마감 때만)
+  let rsiTickRaf = 0;
+  function updateRSILive() {
+    if (!showRSI || !rsiSeries || !barsArr.length || rsiTickRaf) return;
+    rsiTickRaf = requestAnimationFrame(() => {
+      rsiTickRaf = 0;
+      const bars = barsArr;
+      if (bars.length < RSI_PERIOD + 5) return;
+      const pts = calcRSI(bars, RSI_PERIOD);
+      const last = pts[pts.length - 1];
+      if (!last || last.time !== bars[bars.length - 1].time) return;
+      try { rsiSeries.update({ time: last.time, value: last.value }); } catch {}
+      rsiLast = last.value;
+      const notes = lastRSI ? lastRSI.notes : [];
+      const div = lastRSI ? lastRSI.div : null;
+      $("rsi-info").innerHTML = rsiInfoHTML(rsiLast, notes.join("  "), div);
+    });
+  }
+
+  function applyRSIVisibility() {
+    $("rsi-wrap").classList.toggle("on", showRSI);
+    btnRSI.classList.toggle("on-rsi", showRSI);
+    btnRSI.setAttribute("aria-pressed", String(showRSI));
+    if (showRSI) {
+      ensureRSIChart();
+      // 창이 막 열려 크기가 0이므로 다음 프레임에 그린다
+      requestAnimationFrame(() => runRSI(barsArr));
+    } else {
+      clearPriceDivLines();      // 가격 창에 남는 다이버전스 선 제거
+      rsiLast = null; lastRSI = null;
+    }
+  }
+
+  const btnRSI = document.createElement("button");
+  btnRSI.className = "toggle";
+  btnRSI.textContent = "RSI";
+  btnRSI.title = "RSI(14) · RSI 추세선 · 다이버전스";
+  btnRSI.addEventListener("click", () => {
+    showRSI = !showRSI;
+    try { localStorage.setItem(RSI_KEY, showRSI ? "1" : "0"); } catch {}
+    applyRSIVisibility();
+  });
+  grpAuto.appendChild(btnRSI);
 
   // ── 사용자 그리기 도구 (자석 스냅 · 이동/회전 · 자동 저장) ──
   let drawMode = null;             // null | 'trend' | 'horiz'
@@ -2227,6 +2684,7 @@
           }
         } else {
           updateMAsLive();        // 진행 중인 봉: 이평선 마지막 점만 갱신
+          updateRSILive();        // 진행 중인 봉: RSI 마지막 점만 갱신
         }
         stampUpdate();
       }
@@ -2253,6 +2711,7 @@
     if (ws) { try { ws.close(); } catch {} ws = null; }
     detachUserLines();          // 그린 선 (종목별 저장분은 로드 후 복원)
     clearMAs();
+    if (rsiChart) { clearRSIOverlays(); try { rsiSeries.setData([]); } catch {} }
     clearAnalysis();
     lastPrice = null;
     barMap = new Map();
@@ -2283,6 +2742,7 @@
     if (document.visibilityState === "hidden") saveViewNow();
   });
   applyCoinChrome();
+  applyRSIVisibility();   // 지난번에 RSI를 켜 뒀다면 그대로 복원
   loadTimeframe(current).then(() => connectWS(current));
 })();
 </script>
