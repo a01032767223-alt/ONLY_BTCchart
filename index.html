@@ -192,27 +192,38 @@
   /* ── RSI 보조 지표 창 ── */
   #rsi-wrap {
     position: relative;
-    height: 148px;
+    height: 168px;
     flex: 0 0 auto;
     border-top: 1px solid var(--border);
     display: none;
   }
   #rsi-wrap.on { display: block; }
-  #rsi { position: absolute; top: 12px; left: 0; right: 0; bottom: 0; }
-  /* 창 높이 조절 손잡이 — 위아래로 끌어 원하는 간격으로 맞춘다 */
+  #rsi { position: absolute; top: 24px; left: 0; right: 0; bottom: 0; }
+  /* 창 높이 조절 손잡이 — 위아래로 끌어 원하는 간격으로 맞춘다.
+     손가락으로 잡아야 하므로 높이를 24px로 넉넉히 두고, 눌린 상태를 색으로 알린다. */
   #rsi-grip {
-    position: absolute; top: 0; left: 0; right: 0; height: 12px; z-index: 6;
-    cursor: ns-resize; touch-action: none;
-    display: flex; align-items: center; justify-content: center;
+    position: absolute; top: 0; left: 0; right: 0; height: 24px; z-index: 7;
+    cursor: ns-resize; touch-action: none; user-select: none;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: rgba(139,147,167,.06);
+    border-bottom: 1px solid rgba(35,40,56,.9);
+    font-size: 10px; color: transparent;
   }
-  #rsi-grip::after {
-    content: ""; width: 38px; height: 3px; border-radius: 2px;
-    background: rgba(139,147,167,.35); transition: background .12s;
+  #rsi-grip::before {
+    content: ""; width: 44px; height: 4px; border-radius: 3px;
+    background: rgba(139,147,167,.45); transition: background .12s, width .12s;
   }
-  #rsi-grip:hover::after { background: rgba(139,147,167,.7); }
-  #rsi-grip.drag::after { background: var(--btc); }
+  #rsi-grip:hover { background: rgba(139,147,167,.1); }
+  #rsi-grip:hover::before { background: rgba(139,147,167,.8); }
+  #rsi-grip.drag { background: rgba(247,147,26,.1); color: var(--btc); }
+  #rsi-grip.drag::before { background: var(--btc); width: 56px; }
+  #rsi-grip .hint {
+    position: absolute; right: 12px;
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    pointer-events: none;
+  }
   #rsi-info {
-    position: absolute; top: 17px; left: 10px; z-index: 4;
+    position: absolute; top: 30px; left: 10px; z-index: 4;
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
     font-size: 11px; color: var(--muted);
     pointer-events: none;
@@ -245,7 +256,7 @@
   .toggle.on-rsi { color: #e879f9; background: rgba(232,121,249,.1); border-color: rgba(232,121,249,.38); }
 
   @media (max-width: 430px) {
-    #rsi-wrap { height: 118px; }
+    #rsi-wrap { height: 142px; }
     #rsi-info { font-size: 10px; gap: 6px; }
   }
 
@@ -475,7 +486,7 @@
 </div>
 
 <div id="rsi-wrap" aria-label="RSI 보조 지표">
-  <div id="rsi-grip" role="separator" aria-label="RSI 창 높이 조절" title="위아래로 끌어 높이 조절"></div>
+  <div id="rsi-grip" role="separator" aria-label="RSI 창 높이 조절" title="위아래로 끌어 높이 조절 (두 번 누르면 기본값)"><span class="hint"></span></div>
   <div id="rsi"></div>
   <div id="rsi-info"></div>
 </div>
@@ -1480,6 +1491,7 @@
   const RSI_KEY = "btcchart_rsi_on";
   const RSI_PERIOD_KEY = "btcchart_rsi_period";
   const RSI_HEIGHT_KEY = "btcchart_rsi_height";
+  const RSI_DEFAULT_HEIGHT = 168;
   const RSI_COLOR = "#e879f9";
   const DIV_BEAR = "#f43f5e";   // 약세(하락) 다이버전스
   const DIV_BULL = "#14b8a6";   // 강세(상승) 다이버전스
@@ -1784,7 +1796,7 @@
     const chartH = $("chart-wrap").getBoundingClientRect().height;
     const room = wrapH + chartH - 140;
     const max = Math.max(120, Math.min(Math.round(window.innerHeight * 0.65), Math.round(room)));
-    return Math.max(70, Math.min(max, Math.round(h)));
+    return Math.max(100, Math.min(max, Math.round(h)));
   }
   function applyRSIHeight(h) {
     $("rsi-wrap").style.height = clampRSIHeight(h) + "px";
@@ -1795,36 +1807,73 @@
   } catch {}
   (() => {
     const grip = $("rsi-grip");
-    let startY = 0, startH = 0, active = false;
-    grip.addEventListener("pointerdown", e => {
+    const hint = grip.querySelector(".hint");
+    let startY = 0, startH = 0, active = false, lastTap = 0, moved = false;
+
+    const begin = y => {
       active = true;
-      startY = e.clientY;
+      startY = y;
       startH = $("rsi-wrap").getBoundingClientRect().height;
+      moved = false;
       grip.classList.add("drag");
-      try { grip.setPointerCapture(e.pointerId); } catch {}
-      e.preventDefault();
-    });
-    grip.addEventListener("pointermove", e => {
+    };
+    const move = y => {
       if (!active) return;
-      applyRSIHeight(startH - (e.clientY - startY));   // 위로 끌면 커진다
-      e.preventDefault();
-    });
+      if (Math.abs(y - startY) > 2) moved = true;
+      applyRSIHeight(startH - (y - startY));   // 위로 끌면 커진다
+      hint.textContent = Math.round($("rsi-wrap").getBoundingClientRect().height) + "px";
+    };
     const end = () => {
       if (!active) return;
       active = false;
       grip.classList.remove("drag");
+      hint.textContent = "";
       try {
         localStorage.setItem(RSI_HEIGHT_KEY,
           String(Math.round($("rsi-wrap").getBoundingClientRect().height)));
       } catch {}
       scheduleHandles();   // 위 차트가 줄었으므로 그린 선의 조작 핸들 위치 재계산
     };
-    grip.addEventListener("pointerup", end);
-    grip.addEventListener("pointercancel", end);
-    // 손잡이를 두 번 누르면 기본 높이로
-    grip.addEventListener("dblclick", () => {
-      applyRSIHeight(148);
-      try { localStorage.setItem(RSI_HEIGHT_KEY, "148"); } catch {}
+    const reset = () => {
+      applyRSIHeight(RSI_DEFAULT_HEIGHT);
+      try { localStorage.setItem(RSI_HEIGHT_KEY, String(RSI_DEFAULT_HEIGHT)); } catch {}
+      scheduleHandles();
+    };
+
+    // 포인터 이벤트를 우선 쓰고, 지원하지 않는 환경에서는 터치로 대체한다
+    if (window.PointerEvent) {
+      grip.addEventListener("pointerdown", e => {
+        begin(e.clientY);
+        try { grip.setPointerCapture(e.pointerId); } catch {}
+        e.preventDefault();
+      });
+      grip.addEventListener("pointermove", e => { if (active) { move(e.clientY); e.preventDefault(); } });
+      grip.addEventListener("pointerup", end);
+      grip.addEventListener("pointercancel", end);
+    } else {
+      grip.addEventListener("touchstart", e => {
+        if (!e.touches[0]) return;
+        begin(e.touches[0].clientY);
+        e.preventDefault();
+      }, { passive: false });
+      grip.addEventListener("touchmove", e => {
+        if (!active || !e.touches[0]) return;
+        move(e.touches[0].clientY);
+        e.preventDefault();
+      }, { passive: false });
+      grip.addEventListener("touchend", end);
+      grip.addEventListener("touchcancel", end);
+      grip.addEventListener("mousedown", e => { begin(e.clientY); e.preventDefault(); });
+      window.addEventListener("mousemove", e => { if (active) move(e.clientY); });
+      window.addEventListener("mouseup", end);
+    }
+
+    // 두 번 누르면 기본 높이로 (모바일은 dblclick이 안 오는 경우가 있어 직접 판정)
+    grip.addEventListener("dblclick", reset);
+    grip.addEventListener("pointerup", () => {
+      if (moved) { lastTap = 0; return; }   // 끌었던 동작은 탭으로 세지 않는다
+      const now = Date.now();
+      if (now - lastTap < 320) { reset(); lastTap = 0; } else lastTap = now;
     });
   })();
 
