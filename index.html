@@ -198,14 +198,39 @@
     display: none;
   }
   #rsi-wrap.on { display: block; }
-  #rsi { position: absolute; inset: 0; }
+  #rsi { position: absolute; top: 12px; left: 0; right: 0; bottom: 0; }
+  /* 창 높이 조절 손잡이 — 위아래로 끌어 원하는 간격으로 맞춘다 */
+  #rsi-grip {
+    position: absolute; top: 0; left: 0; right: 0; height: 12px; z-index: 6;
+    cursor: ns-resize; touch-action: none;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #rsi-grip::after {
+    content: ""; width: 38px; height: 3px; border-radius: 2px;
+    background: rgba(139,147,167,.35); transition: background .12s;
+  }
+  #rsi-grip:hover::after { background: rgba(139,147,167,.7); }
+  #rsi-grip.drag::after { background: var(--btc); }
   #rsi-info {
-    position: absolute; top: 5px; left: 10px; z-index: 4;
+    position: absolute; top: 17px; left: 10px; z-index: 4;
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
     font-size: 11px; color: var(--muted);
     pointer-events: none;
   }
   #rsi-info .nm { color: #e879f9; font-weight: 600; }
+  #rsi-info .per { display: inline-flex; align-items: center; gap: 3px; pointer-events: auto; }
+  #rsi-info .per button {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    width: 20px; height: 20px; padding: 0; line-height: 1;
+    border-radius: 5px; font-size: 13px; font-family: inherit; cursor: pointer;
+    touch-action: manipulation;
+  }
+  #rsi-info .per button:hover { color: var(--text); border-color: rgba(232,121,249,.5); }
+  #rsi-info .per b {
+    min-width: 18px; text-align: center; color: var(--text); font-weight: 600;
+    font-family: var(--mono); font-variant-numeric: tabular-nums; cursor: pointer;
+    pointer-events: auto;
+  }
   #rsi-info .val { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text); }
   #rsi-info .zone.hot { color: #f43f5e; }
   #rsi-info .zone.cold { color: #22d3ee; }
@@ -450,6 +475,7 @@
 </div>
 
 <div id="rsi-wrap" aria-label="RSI 보조 지표">
+  <div id="rsi-grip" role="separator" aria-label="RSI 창 높이 조절" title="위아래로 끌어 높이 조절"></div>
   <div id="rsi"></div>
   <div id="rsi-info"></div>
 </div>
@@ -1449,14 +1475,22 @@
   //  · 다이버전스는 "가격의 스윙"과 "그 시점 RSI"를 비교한다. RSI 자체의 스윙을
   //    쓰면 가격과 다른 지점을 짚어 실제와 어긋나므로 반드시 가격 기준으로 잡는다.
   // ══════════════════════════════════════════════════════════
-  const RSI_PERIOD = 14;
+  const RSI_DEFAULT_PERIOD = 14;
+  const RSI_MIN_PERIOD = 2, RSI_MAX_PERIOD = 50;
   const RSI_KEY = "btcchart_rsi_on";
+  const RSI_PERIOD_KEY = "btcchart_rsi_period";
+  const RSI_HEIGHT_KEY = "btcchart_rsi_height";
   const RSI_COLOR = "#e879f9";
   const DIV_BEAR = "#f43f5e";   // 약세(하락) 다이버전스
   const DIV_BULL = "#14b8a6";   // 강세(상승) 다이버전스
 
   let showRSI = false;
-  try { showRSI = localStorage.getItem(RSI_KEY) === "1"; } catch {}
+  let rsiPeriod = RSI_DEFAULT_PERIOD;
+  try {
+    showRSI = localStorage.getItem(RSI_KEY) === "1";
+    const p = parseInt(localStorage.getItem(RSI_PERIOD_KEY), 10);
+    if (Number.isFinite(p) && p >= RSI_MIN_PERIOD && p <= RSI_MAX_PERIOD) rsiPeriod = p;
+  } catch {}
 
   let rsiChart = null, rsiSeries = null;
   let rsiTrendSeries = [];    // RSI 창의 자동 추세선
@@ -1549,7 +1583,7 @@
 
     let rW = 0, rH = 0, rRaf = 0;
     new ResizeObserver(() => {
-      const el = $("rsi-wrap");
+      const el = $("rsi");   // 손잡이 높이를 뺀 실제 차트 영역
       const w = el.clientWidth, h = el.clientHeight;
       if ((w === rW && h === rH) || !w || !h) return;
       rW = w; rH = h;
@@ -1559,7 +1593,7 @@
         rsiChart.applyOptions({ width: w, height: h });
         syncScaleWidth();
       });
-    }).observe($("rsi-wrap"));
+    }).observe($("rsi"));
 
     return rsiChart;
   }
@@ -1716,11 +1750,89 @@
     return found[0];
   }
 
+  // 기간 조절 컨트롤 (− / 숫자 / +). 숫자를 누르면 기본값 14로 되돌린다.
+  function perHTML() {
+    return `<span class="nm">RSI</span>` +
+      `<span class="per">` +
+        `<button data-per="-" aria-label="기간 줄이기">−</button>` +
+        `<b data-per="reset" title="눌러서 기본값(${RSI_DEFAULT_PERIOD})으로">${rsiPeriod}</b>` +
+        `<button data-per="+" aria-label="기간 늘리기">+</button>` +
+      `</span>`;
+  }
+
+  // 컨트롤은 매 렌더마다 다시 그려지므로 위임 방식으로 한 번만 연결한다
+  $("rsi-info").addEventListener("click", e => {
+    const el = e.target.closest("[data-per]");
+    if (!el) return;
+    const act = el.dataset.per;
+    let v = act === "reset" ? RSI_DEFAULT_PERIOD
+          : rsiPeriod + (act === "+" ? 1 : -1);
+    v = Math.max(RSI_MIN_PERIOD, Math.min(RSI_MAX_PERIOD, v));
+    if (v === rsiPeriod) return;
+    rsiPeriod = v;
+    try { localStorage.setItem(RSI_PERIOD_KEY, String(v)); } catch {}
+    runRSI(barsArr);   // 기간이 바뀌면 추세선·다이버전스도 함께 다시 잡는다
+  });
+
+  // ── 창 높이 조절 ──
+  // 손잡이를 위아래로 끌면 RSI 창이 늘어나고 위 차트가 그만큼 줄어든다.
+  // 화면이 다 잡아먹히지 않도록 최소 70px, 최대 화면의 65%로 제한한다.
+  function clampRSIHeight(h) {
+    // 위 차트가 뭉개지지 않도록 최소 140px는 남겨 둔다.
+    // 두 창의 높이 합은 드래그 중에도 일정하므로 여기서 남은 공간을 계산할 수 있다.
+    const wrapH = $("rsi-wrap").getBoundingClientRect().height;
+    const chartH = $("chart-wrap").getBoundingClientRect().height;
+    const room = wrapH + chartH - 140;
+    const max = Math.max(120, Math.min(Math.round(window.innerHeight * 0.65), Math.round(room)));
+    return Math.max(70, Math.min(max, Math.round(h)));
+  }
+  function applyRSIHeight(h) {
+    $("rsi-wrap").style.height = clampRSIHeight(h) + "px";
+  }
+  try {
+    const savedH = parseInt(localStorage.getItem(RSI_HEIGHT_KEY), 10);
+    if (Number.isFinite(savedH)) applyRSIHeight(savedH);
+  } catch {}
+  (() => {
+    const grip = $("rsi-grip");
+    let startY = 0, startH = 0, active = false;
+    grip.addEventListener("pointerdown", e => {
+      active = true;
+      startY = e.clientY;
+      startH = $("rsi-wrap").getBoundingClientRect().height;
+      grip.classList.add("drag");
+      try { grip.setPointerCapture(e.pointerId); } catch {}
+      e.preventDefault();
+    });
+    grip.addEventListener("pointermove", e => {
+      if (!active) return;
+      applyRSIHeight(startH - (e.clientY - startY));   // 위로 끌면 커진다
+      e.preventDefault();
+    });
+    const end = () => {
+      if (!active) return;
+      active = false;
+      grip.classList.remove("drag");
+      try {
+        localStorage.setItem(RSI_HEIGHT_KEY,
+          String(Math.round($("rsi-wrap").getBoundingClientRect().height)));
+      } catch {}
+      scheduleHandles();   // 위 차트가 줄었으므로 그린 선의 조작 핸들 위치 재계산
+    };
+    grip.addEventListener("pointerup", end);
+    grip.addEventListener("pointercancel", end);
+    // 손잡이를 두 번 누르면 기본 높이로
+    grip.addEventListener("dblclick", () => {
+      applyRSIHeight(148);
+      try { localStorage.setItem(RSI_HEIGHT_KEY, "148"); } catch {}
+    });
+  })();
+
   function rsiInfoHTML(val, tl, div) {
-    if (val == null) return `<span class="nm">RSI(${RSI_PERIOD})</span><span>데이터 부족</span>`;
+    if (val == null) return perHTML() + `<span>데이터 부족</span>`;
     const zone = val >= 70 ? ["hot", "과매수"] : val <= 30 ? ["cold", "과매도"]
                : val >= 50 ? ["", "중립(강)"] : ["", "중립(약)"];
-    let h = `<span class="nm">RSI(${RSI_PERIOD})</span>` +
+    let h = perHTML() +
             `<span class="val">${val.toFixed(1)}</span>` +
             `<span class="zone ${zone[0]}">${zone[1]}</span>`;
     if (tl) h += `<span class="tl">${tl}</span>`;
@@ -1734,17 +1846,17 @@
     if (!showRSI) return;
     ensureRSIChart();
     clearRSIOverlays();
-    if (!bars || bars.length < RSI_PERIOD + 5) {
+    if (!bars || bars.length < rsiPeriod + 5) {
       try { rsiSeries.setData([]); } catch {}
       rsiLast = null;
       $("rsi-info").innerHTML = rsiInfoHTML(null);
       return;
     }
-    const pts = calcRSI(bars, RSI_PERIOD);
+    const pts = calcRSI(bars, rsiPeriod);
     // 앞쪽 봉은 whitespace로 채워 위 차트와 봉 번호를 일치시킨다
-    const data = bars.map((b, i) => i < RSI_PERIOD
+    const data = bars.map((b, i) => i < rsiPeriod
       ? { time: b.time }
-      : { time: b.time, value: pts[i - RSI_PERIOD].value });
+      : { time: b.time, value: pts[i - rsiPeriod].value });
     rsiSeries.setData(data);
     rsiLast = pts[pts.length - 1].value;
     syncScaleWidth();
@@ -1818,8 +1930,8 @@
     rsiTickRaf = requestAnimationFrame(() => {
       rsiTickRaf = 0;
       const bars = barsArr;
-      if (bars.length < RSI_PERIOD + 5) return;
-      const pts = calcRSI(bars, RSI_PERIOD);
+      if (bars.length < rsiPeriod + 5) return;
+      const pts = calcRSI(bars, rsiPeriod);
       const last = pts[pts.length - 1];
       if (!last || last.time !== bars[bars.length - 1].time) return;
       try { rsiSeries.update({ time: last.time, value: last.value }); } catch {}
@@ -1847,7 +1959,7 @@
   const btnRSI = document.createElement("button");
   btnRSI.className = "toggle";
   btnRSI.textContent = "RSI";
-  btnRSI.title = "RSI(14) · RSI 추세선 · 다이버전스";
+  btnRSI.title = "RSI · RSI 추세선 · 다이버전스 (창 높이·기간 조절 가능)";
   btnRSI.addEventListener("click", () => {
     showRSI = !showRSI;
     try { localStorage.setItem(RSI_KEY, showRSI ? "1" : "0"); } catch {}
