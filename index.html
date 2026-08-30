@@ -1549,6 +1549,8 @@
   } catch {}
 
   let rsiChart = null, rsiSeries = null;
+  let rsiBandHi = null, rsiBandLo = null;   // 과매수/과매도 구간 음영
+  let rsiZoneHi = null, rsiZoneLo = null;   // 구간에 들어간 부분만 색을 달리한 선
   let rsiTrendSeries = [];    // RSI 창의 자동 추세선
   let rsiDivSeries = [];      // RSI 창의 다이버전스 연결선
   let priceDivSeries = [];    // 가격 창의 다이버전스 연결선
@@ -1610,6 +1612,32 @@
                       pressedMouseMove: true, mouseWheel: true },
     });
 
+    // ── 과매수(70↑) / 과매도(30↓) 구간 음영 ──
+    // 기준선을 base로 삼는 baseline 시리즈를 깔아 두면 축을 늘리거나 줄여도
+    // 음영이 저절로 따라온다. 좌표를 직접 계산해 덧그리면 축을 조절할 때마다
+    // 어긋나므로 이 방식이 안전하다.
+    const CLEAR = "rgba(0,0,0,0)";
+    rsiBandHi = rsiChart.addBaselineSeries({
+      baseValue: { type: "price", price: 70 },
+      topFillColor1: "rgba(244,63,94,.22)",   // 100 쪽이 진하고
+      topFillColor2: "rgba(244,63,94,.03)",   // 70 쪽으로 갈수록 옅어진다
+      topLineColor: CLEAR, bottomLineColor: CLEAR,
+      bottomFillColor1: CLEAR, bottomFillColor2: CLEAR,
+      lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      autoscaleInfoProvider: () => null,      // 눈금 계산에는 관여하지 않는다
+    });
+    rsiBandLo = rsiChart.addBaselineSeries({
+      baseValue: { type: "price", price: 30 },
+      bottomFillColor1: "rgba(34,211,238,.03)",
+      bottomFillColor2: "rgba(34,211,238,.22)",
+      topLineColor: CLEAR, bottomLineColor: CLEAR,
+      topFillColor1: CLEAR, topFillColor2: CLEAR,
+      lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      autoscaleInfoProvider: () => null,
+    });
+
     rsiSeries = rsiChart.addLineSeries({
       color: RSI_COLOR, lineWidth: 2,
       priceLineVisible: false, lastValueVisible: true,
@@ -1621,10 +1649,19 @@
       autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
     });
 
+    // 구간에 들어간 구간만 색을 달리해 한 번 더 눈에 띄게 한다 (선 위에 덧그린다)
+    const zoneOpts = color => ({
+      color, lineWidth: 2,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      autoscaleInfoProvider: () => null,
+    });
+    rsiZoneHi = rsiChart.addLineSeries(zoneOpts("#f43f5e"));
+    rsiZoneLo = rsiChart.addLineSeries(zoneOpts("#22d3ee"));
+
     [
-      { price: 70, color: "rgba(244,63,94,.55)", title: "70" },
+      { price: 70, color: "rgba(244,63,94,.7)", title: "70" },
       { price: 50, color: "rgba(139,147,167,.35)", title: "50" },
-      { price: 30, color: "rgba(34,211,238,.55)", title: "30" },
+      { price: 30, color: "rgba(34,211,238,.7)", title: "30" },
     ].forEach(l => rsiSeries.createPriceLine({
       price: l.price, color: l.color, lineWidth: 1,
       lineStyle: l.price === 50 ? LightweightCharts.LineStyle.Dotted
@@ -2147,7 +2184,7 @@
     ensureRSIChart();
     clearRSIOverlays();
     if (!bars || bars.length < rsiPeriod + 5) {
-      try { rsiSeries.setData([]); } catch {}
+      try { setRSIData([], []); } catch {}
       rsiLast = null;
       $("rsi-info").innerHTML = rsiInfoHTML(null);
       return;
@@ -2157,7 +2194,7 @@
     const data = bars.map((b, i) => i < rsiPeriod
       ? { time: b.time }
       : { time: b.time, value: pts[i - rsiPeriod].value });
-    rsiSeries.setData(data);
+    setRSIData(data, bars);
     rsiLast = pts[pts.length - 1].value;
     syncScaleWidth();
     try {
@@ -2227,6 +2264,19 @@
     $("rsi-info").innerHTML = rsiInfoHTML(rsiLast, tlNotes.join("  "), div);
   }
 
+  // 선·음영·구간 강조를 한 번에 세팅한다
+  function setRSIData(data, bars) {
+    rsiSeries.setData(data);
+    // 음영은 전체 구간에 걸친 상수선(100 / 0)으로 만든다
+    rsiBandHi.setData(bars.map(b => ({ time: b.time, value: 100 })));
+    rsiBandLo.setData(bars.map(b => ({ time: b.time, value: 0 })));
+    // 구간 밖의 봉은 값 없는 점으로 두어 선이 끊기게 한다
+    const zone = test => data.map(d =>
+      (d.value != null && test(d.value)) ? d : { time: d.time });
+    rsiZoneHi.setData(zone(v => v >= 70));
+    rsiZoneLo.setData(zone(v => v <= 30));
+  }
+
   // 진행 중인 봉: 마지막 점만 갱신 (전체 재계산·재렌더는 봉 마감 때만)
   let rsiTickRaf = 0;
   function updateRSILive() {
@@ -2238,7 +2288,11 @@
       const pts = calcRSI(bars, rsiPeriod);
       const last = pts[pts.length - 1];
       if (!last || last.time !== bars[bars.length - 1].time) return;
-      try { rsiSeries.update({ time: last.time, value: last.value }); } catch {}
+      try {
+        rsiSeries.update({ time: last.time, value: last.value });
+        rsiZoneHi.update(last.value >= 70 ? { time: last.time, value: last.value } : { time: last.time });
+        rsiZoneLo.update(last.value <= 30 ? { time: last.time, value: last.value } : { time: last.time });
+      } catch {}
       rsiLast = last.value;
       const notes = lastRSI ? lastRSI.notes : [];
       const div = lastRSI ? lastRSI.div : null;
@@ -3128,7 +3182,7 @@
     if (ws) { try { ws.close(); } catch {} ws = null; }
     detachUserLines();          // 그린 선 (종목별 저장분은 로드 후 복원)
     clearMAs();
-    if (rsiChart) { clearRSIOverlays(); try { rsiSeries.setData([]); } catch {} }
+    if (rsiChart) { clearRSIOverlays(); try { setRSIData([], []); } catch {} }
     clearAnalysis();
     lastPrice = null;
     barMap = new Map();
