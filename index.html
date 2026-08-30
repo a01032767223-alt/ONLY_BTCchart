@@ -403,6 +403,35 @@
     white-space: pre-wrap;
   }
 
+  /* 시장 정보 띠 — 캔들만 봐서는 알 수 없는 숫자들을 한 줄로 모았다 */
+  #mkt {
+    display: flex; gap: 8px; align-items: center;
+    padding: 7px 12px;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; cursor: pointer; flex-shrink: 0;
+  }
+  #mkt::-webkit-scrollbar { display: none; }
+  #mkt:empty { display: none; }
+  #mkt .mchip {
+    display: inline-flex; align-items: center; gap: 5px; flex: none;
+    padding: 4px 10px; border-radius: 999px;
+    border: 1px solid var(--border); background: rgba(139,147,167,.07);
+    font-size: 11px; white-space: nowrap;
+  }
+  #mkt .mchip .k { color: var(--muted); }
+  #mkt .mchip .v {
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    color: var(--text); font-weight: 600;
+  }
+  #mkt .mchip .v.up { color: #ef4444; }
+  #mkt .mchip .v.down { color: #3b82f6; }
+  #mkt .mchip .v.hot { color: #f43f5e; }
+  #mkt .mchip .v.cold { color: #22d3ee; }
+  #mkt .mchip .sub { color: var(--muted); font-size: 10px; }
+  #mkt .mhelp { flex: none; color: var(--muted); font-size: 11px; padding: 0 4px; }
+
   footer {
     padding: 6px
              calc(16px + env(safe-area-inset-right, 0px))
@@ -542,6 +571,8 @@
   <div id="ai-body"></div>
 </div>
 
+<div id="mkt" role="button" tabindex="0" aria-label="시장 정보 (눌러서 설명 보기)"></div>
+
 <footer>
   <span id="sr-info">자동 분석 대기 중…</span>
   <span id="last-update"></span>
@@ -654,6 +685,12 @@
   const volume = chart.addHistogramSeries({
     priceFormat: { type: "volume" },
     priceScaleId: "vol",
+  });
+  // 거래량 막대만으로는 지금이 많은 편인지 알 수 없어 20봉 평균선을 함께 긋는다
+  const volMA = chart.addLineSeries({
+    priceScaleId: "vol",
+    color: "rgba(226,232,240,.5)", lineWidth: 1,
+    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
   });
   chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.84, bottom: 0 } });
 
@@ -893,6 +930,7 @@
     const bars = [...barMap.values()].sort((a, b) => a.time - b.time);
     barsArr = bars;   // 자석 스냅 계산에 사용
     runRSI(bars);     // RSI·RSI 추세선·다이버전스 (켜져 있을 때만 동작)
+    updateLocalStats(bars);   // ATR·거래량 배수 (네트워크 없이 캔들에서 계산)
     // 기준가는 "차트에 실제로 그려진 마지막 봉의 종가"를 쓴다.
     // 헤더의 miniTicker 값(lastPrice)을 쓰면, 두 피드가 어긋났을 때
     // 선은 캔들 시리즈 좌표에 그려지는데 기준만 다른 곳을 가리켜
@@ -2990,11 +3028,198 @@
   function applyBars(bars) {
     candles.setData(bars.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
     volume.setData(bars.map(b => ({ time: b.time, value: b.volume, color: volColor(b) })));
+    const N = 20, ma = [];
+    let sum = 0;
+    bars.forEach((b, i) => {
+      sum += b.volume;
+      if (i >= N) sum -= bars[i - N].volume;
+      ma.push(i >= N - 1 ? { time: b.time, value: sum / N } : { time: b.time });
+    });
+    volMA.setData(ma);
   }
   function upsertBar(bar) {
     candles.update({ time: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close });
     volume.update({ time: bar.time, value: bar.volume, color: volColor(bar) });
   }
+
+  // ══════════════════════════════════════════════════════════
+  //  시장 정보 띠 — API 키가 필요 없는 공개 데이터만 쓴다.
+  //  · 김치프리미엄: 업비트 원화가 ÷ (바이낸스 달러가 × 업비트 USDT 원화가)
+  //    환율 API를 따로 부르지 않아도 되도록 USDT 시세를 환율 대신 쓴다.
+  //  · 펀딩비: 바이낸스 선물 공개 엔드포인트 (선물 시장이 어느 쪽에 쏠렸는지)
+  //  · 공포탐욕지수: alternative.me 공개 지수
+  //  · ATR·거래량 배수: 지금 화면의 캔들에서 직접 계산 (네트워크 불필요)
+  //  어느 하나가 막히거나 실패하면 그 칩만 조용히 빠진다. 오류 문구는 띄우지 않는다.
+  // ══════════════════════════════════════════════════════════
+  const UPBIT_MARKET = { BTC: "KRW-BTC", ETH: "KRW-ETH", XRP: "KRW-XRP", SOL: "KRW-SOL", DOGE: "KRW-DOGE" };
+  const mkt = { kimp: null, funding: null, fng: null, atr: null, volX: null };
+
+  const jget = async (url, ms = 6000) => {
+    const r = await fetch(url, { signal: AbortSignal.timeout(ms) });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  };
+
+  async function fetchKimp() {
+    const market = UPBIT_MARKET[coin.key];
+    if (!market || !barsArr.length) return null;
+    const rows = await jget(`https://api.upbit.com/v1/ticker?markets=${market},KRW-USDT`);
+    const krw = rows.find(r => r.market === market);
+    const usdt = rows.find(r => r.market === "KRW-USDT");
+    if (!krw || !usdt || !usdt.trade_price) return null;
+    const usdPrice = barsArr[barsArr.length - 1].close;      // 바이낸스 현재가
+    const fair = usdPrice * usdt.trade_price;                 // 원화 환산 이론가
+    if (!fair) return null;
+    return { pct: (krw.trade_price / fair - 1) * 100, krw: krw.trade_price };
+  }
+
+  async function fetchFunding() {
+    const d = await jget(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${coin.key}USDT`);
+    const rate = parseFloat(d.lastFundingRate);
+    if (!Number.isFinite(rate)) return null;
+    const mins = d.nextFundingTime ? Math.max(0, Math.round((d.nextFundingTime - Date.now()) / 60000)) : null;
+    return { pct: rate * 100, mins };
+  }
+
+  async function fetchFng() {
+    const d = await jget("https://api.alternative.me/fng/?limit=1");
+    const row = d && d.data && d.data[0];
+    if (!row) return null;
+    return { value: parseInt(row.value, 10), label: row.value_classification };
+  }
+
+  // ATR(14) — 하루(한 봉) 평균 변동폭. 손절 폭을 감이 아니라 숫자로 잡는 데 쓴다.
+  function calcATR(bars, period = 14) {
+    if (bars.length < period + 1) return null;
+    let sum = 0;
+    for (let i = 1; i <= period; i++) {
+      const b = bars[i], pc = bars[i - 1].close;
+      sum += Math.max(b.high - b.low, Math.abs(b.high - pc), Math.abs(b.low - pc));
+    }
+    let atr = sum / period;
+    for (let i = period + 1; i < bars.length; i++) {
+      const b = bars[i], pc = bars[i - 1].close;
+      const tr = Math.max(b.high - b.low, Math.abs(b.high - pc), Math.abs(b.low - pc));
+      atr = (atr * (period - 1) + tr) / period;
+    }
+    return atr;
+  }
+
+  // 지금 봉의 거래량이 최근 20봉 평균의 몇 배인지
+  function calcVolRatio(bars, n = 20) {
+    if (bars.length < n + 1) return null;
+    const prev = bars.slice(-n - 1, -1);
+    const avg = prev.reduce((a, b) => a + b.volume, 0) / n;
+    if (!avg) return null;
+    return bars[bars.length - 1].volume / avg;
+  }
+
+  function updateLocalStats(bars) {
+    if (!bars || !bars.length) return;
+    const atr = calcATR(bars);
+    mkt.atr = atr ? { abs: atr, pct: (atr / bars[bars.length - 1].close) * 100 } : null;
+    mkt.volX = calcVolRatio(bars);
+    renderMkt();
+  }
+
+  function renderMkt() {
+    const chip = (k, v, cls, sub) =>
+      `<span class="mchip"><span class="k">${k}</span>` +
+      `<span class="v${cls ? " " + cls : ""}">${v}</span>` +
+      (sub ? `<span class="sub">${sub}</span>` : "") + `</span>`;
+    const out = [];
+
+    if (mkt.kimp) {
+      const p = mkt.kimp.pct;
+      out.push(chip("김프", `${p >= 0 ? "+" : ""}${p.toFixed(2)}%`,
+        p >= 0 ? "up" : "down", `₩${Math.round(mkt.kimp.krw).toLocaleString("ko-KR")}`));
+    }
+    if (mkt.funding) {
+      const f = mkt.funding;
+      out.push(chip("펀딩", `${f.pct >= 0 ? "+" : ""}${f.pct.toFixed(4)}%`,
+        f.pct >= 0 ? "up" : "down",
+        f.mins == null ? "" : `${Math.floor(f.mins / 60)}시간 ${f.mins % 60}분 뒤`));
+    }
+    if (mkt.fng) {
+      const v = mkt.fng.value;
+      out.push(chip("공포탐욕", String(v),
+        v >= 75 ? "hot" : v <= 25 ? "cold" : "", mkt.fng.label));
+    }
+    if (mkt.atr) {
+      out.push(chip(`ATR`, fmtPrice(mkt.atr.abs), "", `${mkt.atr.pct.toFixed(1)}% · ${current.label}`));
+    }
+    if (mkt.volX != null) {
+      out.push(chip("거래량", `${mkt.volX.toFixed(1)}배`,
+        mkt.volX >= 1.8 ? "hot" : mkt.volX <= 0.5 ? "cold" : "", "20봉 평균 대비"));
+    }
+    $("mkt").innerHTML = out.length ? out.join("") + `<span class="mhelp">?</span>` : "";
+  }
+
+  // 각 항목을 따로 받아 온다. 하나가 실패해도 나머지는 그대로 보인다.
+  async function refreshMkt(which) {
+    const jobs = [];
+    if (!which || which === "kimp")
+      jobs.push(fetchKimp().then(v => { mkt.kimp = v; }).catch(() => { mkt.kimp = null; }));
+    if (!which || which === "funding")
+      jobs.push(fetchFunding().then(v => { mkt.funding = v; }).catch(() => { mkt.funding = null; }));
+    if (!which || which === "fng")
+      jobs.push(fetchFng().then(v => { mkt.fng = v; }).catch(() => { mkt.fng = null; }));
+    await Promise.all(jobs);
+    renderMkt();
+  }
+
+  function showMktGuide() {
+    const L = [];
+    L.push("■ 김프 (김치프리미엄)");
+    L.push("국내 거래소 가격이 해외보다 얼마나 비싼지를 %로 나타낸 값입니다. "
+      + "플러스면 국내가 더 비싸다는 뜻이고, 국내 매수세가 과열될수록 커집니다. "
+      + "여기서는 업비트 원화가를 바이낸스 달러가와 업비트 USDT 시세로 환산해 비교합니다. "
+      + (mkt.kimp ? `지금은 ${mkt.kimp.pct >= 0 ? "+" : ""}${mkt.kimp.pct.toFixed(2)}%입니다. ` : "")
+      + "국내에서 사면 그만큼 비싸게 사는 셈이라 실제 손익에 바로 영향을 줍니다. "
+      + "프리미엄이 크게 벌어졌다가 줄어드는 구간에서는 국내 가격이 더 크게 밀리기도 합니다.");
+
+    L.push("\n■ 펀딩비");
+    L.push("선물 시장에서 8시간마다 한쪽이 다른 쪽에 지불하는 수수료입니다. "
+      + "플러스면 오를 것에 건 사람(롱)이 많아 그들이 비용을 내고 있다는 뜻이고, 마이너스면 그 반대입니다. "
+      + (mkt.funding ? `지금은 ${mkt.funding.pct >= 0 ? "+" : ""}${mkt.funding.pct.toFixed(4)}%입니다. ` : "")
+      + "한쪽으로 과하게 쏠리면 작은 반대 움직임에도 강제 청산이 연쇄로 터지며 가격이 급하게 움직일 수 있습니다. "
+      + "현물 캔들만 봐서는 보이지 않는 정보라 함께 볼 값어치가 있습니다.");
+
+    L.push("\n■ 공포탐욕지수");
+    L.push("시장 참여자들의 심리를 0에서 100 사이 숫자로 나타낸 지수입니다. "
+      + "0에 가까울수록 공포, 100에 가까울수록 탐욕입니다. "
+      + (mkt.fng ? `지금은 ${mkt.fng.value} (${mkt.fng.label})입니다. ` : "")
+      + "RSI가 가격의 힘을 재는 것이라면 이 지수는 사람들의 분위기를 재는 것입니다. "
+      + "다만 이 숫자만으로 사고파는 판단을 하지는 마세요. 공포가 극단으로 가도 가격은 더 내릴 수 있습니다.");
+
+    L.push("\n■ ATR");
+    L.push(`이 종목이 한 봉 동안 평균 얼마나 움직이는지를 나타낸 값입니다. 지금 화면은 ${current.label} 기준입니다. `
+      + (mkt.atr ? `지금 ATR은 ${fmtPrice(mkt.atr.abs)}, 현재가의 ${mkt.atr.pct.toFixed(1)}%입니다. ` : "")
+      + "초보자에게 특히 쓸모가 있는데, 손절 폭을 감으로 정하지 않게 해 주기 때문입니다. "
+      + "평균 변동폭보다 좁게 손절을 걸면 방향이 맞아도 흔들림에 먼저 털립니다. "
+      + "보통 ATR의 1.5~2배 정도를 여유로 두는 식으로 씁니다.");
+
+    L.push("\n■ 거래량 배수");
+    L.push("지금 봉의 거래량이 최근 20봉 평균의 몇 배인지 보여줍니다. "
+      + (mkt.volX != null ? `지금은 ${mkt.volX.toFixed(1)}배입니다. ` : "")
+      + "저항선을 뚫는 움직임이 나왔을 때 거래량이 평균 이하라면 힘이 실리지 않은 돌파일 가능성이 큽니다. "
+      + "반대로 2배 이상이면 실제로 손바뀜이 크게 일어난 것이라 그 자리가 의미를 갖습니다. "
+      + "차트의 거래량 막대 위에 그어진 회색 선이 이 20봉 평균선입니다.");
+
+    L.push("\n※ 모두 공개 데이터를 자동 계산한 참고 자료이며 매수·매도 권유가 아닙니다. 투자 판단의 책임은 본인에게 있습니다.");
+
+    const panel = $("ai-panel");
+    panel.style.display = "block";
+    panel.scrollTop = 0;
+    $("ai-src").textContent = `시장 정보 설명 · ${coin.name}`;
+    $("ai-body").textContent = L.join("\n");
+  }
+  $("mkt").addEventListener("click", showMktGuide);
+
+  // 갱신 주기: 김프·펀딩은 자주, 심리지수는 하루 몇 번만 바뀌므로 느리게
+  setInterval(() => refreshMkt("kimp"), 30000);
+  setInterval(() => refreshMkt("funding"), 60000);
+  setInterval(() => refreshMkt("fng"), 600000);
 
   // ── 헤더 갱신 ──
   function updatePrice(p) {
@@ -3165,6 +3390,7 @@
     clearMAs();
     if (rsiChart) { clearRSIOverlays(); try { setRSIData([], []); } catch {} }
     clearAnalysis();
+    mkt.kimp = null; mkt.funding = null; renderMkt();   // 종목별 값이므로 즉시 비운다
     lastPrice = null;
     barMap = new Map();
     applyCoinChrome();
@@ -3195,7 +3421,10 @@
   });
   applyCoinChrome();
   applyRSIVisibility();   // 지난번에 RSI를 켜 뒀다면 그대로 복원
-  loadTimeframe(current).then(() => connectWS(current));
+  loadTimeframe(current).then(() => {
+    connectWS(current);
+    refreshMkt();         // 김프·펀딩·심리지수 (실패한 항목은 조용히 빠진다)
+  });
 })();
 </script>
 </body>
