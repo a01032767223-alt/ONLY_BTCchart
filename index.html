@@ -402,6 +402,35 @@
     font-size: 13px; line-height: 1.7; color: var(--text);
     white-space: pre-wrap;
   }
+  /* 종합 정리는 구조가 있는 화면이라 줄바꿈 규칙을 따로 쓴다 */
+  #ai-body.rich { white-space: normal; }
+  #ai-body .vd {
+    display: inline-block; padding: 5px 14px; border-radius: 999px;
+    font-size: 14px; font-weight: 700; margin-bottom: 8px;
+  }
+  #ai-body .vd.bull { color: #ef4444; background: rgba(239,68,68,.14); border: 1px solid rgba(239,68,68,.5); }
+  #ai-body .vd.bear { color: #3b82f6; background: rgba(59,130,246,.14); border: 1px solid rgba(59,130,246,.5); }
+  #ai-body .vd.flat { color: var(--muted); background: rgba(139,147,167,.14); border: 1px solid rgba(139,147,167,.45); }
+  #ai-body h4 {
+    margin: 14px 0 6px; font-size: 12px; color: var(--muted);
+    font-weight: 600; letter-spacing: .04em;
+  }
+  #ai-body .sig {
+    display: flex; gap: 8px; align-items: flex-start;
+    padding: 5px 0; border-bottom: 1px solid rgba(35,40,56,.7);
+  }
+  #ai-body .sig:last-of-type { border-bottom: none; }
+  #ai-body .sig .ar { flex: none; width: 16px; text-align: center; font-weight: 700; }
+  #ai-body .sig .ar.up { color: #ef4444; }
+  #ai-body .sig .ar.dn { color: #3b82f6; }
+  #ai-body .sig .ar.nt { color: var(--muted); }
+  #ai-body .sig .nm { flex: none; width: 62px; color: var(--muted); font-size: 12px; }
+  #ai-body .sig .tx { flex: 1; font-size: 12.5px; line-height: 1.6; }
+  #ai-body .note { color: var(--muted); font-size: 12px; line-height: 1.65; margin-top: 10px; }
+  #mkt .mchip.sum {
+    background: rgba(247,147,26,.14); border-color: rgba(247,147,26,.5);
+    color: var(--btc); font-weight: 700;
+  }
 
   /* 시장 정보 띠 — 캔들만 봐서는 알 수 없는 숫자들을 한 줄로 모았다 */
   #mkt {
@@ -2144,9 +2173,11 @@
 
     const ctx = buildRSIContext();
     if (!ctx) {
+      body.className = "";
       body.textContent = "아직 RSI 데이터가 없습니다. RSI 창을 켜고 차트가 불러와진 뒤 다시 눌러주세요.";
       return;
     }
+    body.className = "";
     body.textContent = "RSI 상황을 분석하는 중…";
 
     try {
@@ -2181,7 +2212,7 @@
       body.textContent = text;
     } catch {
       $("ai-src").textContent = "RSI 설명 (Claude API 미연결 환경)";
-      body.textContent = buildRSIGuide();
+      body.className = ""; body.textContent = buildRSIGuide();
     }
   }
 
@@ -2189,7 +2220,7 @@
     const panel = $("ai-panel");
     panel.style.display = "block";
     $("ai-src").textContent = `RSI 쉬운 설명 · ${coin.name} ${current.label}`;
-    $("ai-body").textContent = buildRSIGuide();
+    $("ai-body").className = ""; $("ai-body").textContent = buildRSIGuide();
     panel.scrollTop = 0;
   }
 
@@ -2937,6 +2968,7 @@
     const panel = $("ai-panel");
     const body = $("ai-body");
     panel.style.display = "block";
+    body.className = "";
     body.textContent = "해설을 생성하는 중…";
     const local = buildLocalCommentary();
     // Claude API 사용 가능 환경(Claude 아티팩트)에서는 AI 해설, 아니면 규칙 기반 요약
@@ -3152,7 +3184,9 @@
       out.push(chip("거래량", `${mkt.volX.toFixed(1)}배`,
         mkt.volX >= 1.8 ? "hot" : mkt.volX <= 0.5 ? "cold" : "", "20봉 평균 대비"));
     }
-    $("mkt").innerHTML = out.length ? out.join("") + `<span class="mhelp">?</span>` : "";
+    $("mkt").innerHTML = out.length
+      ? `<span class="mchip sum">종합 정리</span>` + out.join("") + `<span class="mhelp">?</span>`
+      : "";
   }
 
   // 각 항목을 따로 받아 온다. 하나가 실패해도 나머지는 그대로 보인다.
@@ -3212,9 +3246,173 @@
     panel.style.display = "block";
     panel.scrollTop = 0;
     $("ai-src").textContent = `시장 정보 설명 · ${coin.name}`;
+    $("ai-body").className = "";
     $("ai-body").textContent = L.join("\n");
   }
-  $("mkt").addEventListener("click", showMktGuide);
+  // ══════════════════════════════════════════════════════════
+  //  종합 정리 — 흩어져 있는 지표를 한 화면에서 같은 잣대로 읽어 준다.
+  //  각 항목이 위/아래 어느 쪽을 가리키는지 방향과 가중치를 매겨 합산한다.
+  //  점수는 "예측"이 아니라 "지금 지표들이 얼마나 한쪽으로 모여 있는가"의 표시다.
+  //  지표가 서로 다른 말을 하면 그 사실 자체를 혼조로 보여 주는 것이 목적이다.
+  // ══════════════════════════════════════════════════════════
+  function lastVal(arr) { return arr.length ? arr[arr.length - 1].value : null; }
+
+  function digestSignals() {
+    const bars = barsArr;
+    if (!bars || bars.length < 30) return null;
+    const price = bars[bars.length - 1].close;
+    const sig = [];
+    const add = (nm, dir, w, tx) => sig.push({ nm, dir, w, tx });
+    const pct = (a, b) => ((a - b) / b) * 100;
+
+    // ① 추세 — 이평선 배열
+    const e21 = lastVal(calcEMA(bars, 21));
+    const e50 = lastVal(calcEMA(bars, 50));
+    const e200 = bars.length >= 200 ? lastVal(calcEMA(bars, 200)) : null;
+    if (e21 && e50) {
+      const above = price > e21, cross = e21 > e50;
+      const longTxt = e200 ? ` 장기 200 EMA(${fmtPrice(e200)})보다 ${price > e200 ? "위" : "아래"}입니다.` : "";
+      if (above && cross)
+        add("추세", 1, 2, `가격이 단기선 위에 있고 단기선(${fmtPrice(e21)})이 중기선(${fmtPrice(e50)})보다 위입니다. 오르는 흐름이 유지되는 배열입니다.${longTxt}`);
+      else if (!above && !cross)
+        add("추세", -1, 2, `가격이 단기선 아래에 있고 단기선(${fmtPrice(e21)})이 중기선(${fmtPrice(e50)})보다 아래입니다. 내리는 흐름이 유지되는 배열입니다.${longTxt}`);
+      else
+        add("추세", 0, 2, `가격과 이동평균선이 엇갈려 있습니다(단기 ${fmtPrice(e21)}, 중기 ${fmtPrice(e50)}). 방향이 아직 정해지지 않은 구간입니다.${longTxt}`);
+    }
+
+    // ② 지지·저항 위치 — 위아래 중 어느 쪽이 더 가까운가
+    if (lastAnalysis && (lastAnalysis.sup || lastAnalysis.res)) {
+      const r = lastAnalysis.res, sp = lastAnalysis.sup;
+      const dr = r ? pct(r.price, price) : null;
+      const ds = sp ? pct(price, sp.price) : null;
+      if (dr != null && ds != null) {
+        const dir = ds < dr ? 1 : -1;
+        add("자리", dir, 2,
+          `아래 지지선 ${fmtPrice(sp.price)}까지 ${ds.toFixed(1)}%, 위 저항선 ${fmtPrice(r.price)}까지 ${dr.toFixed(1)}% 남았습니다. `
+          + (dir > 0 ? "지지선에 더 가까워 아래쪽 받침이 가까운 자리입니다."
+                     : "저항선에 더 가까워 위쪽이 막혀 있는 자리입니다."));
+      } else if (dr != null) {
+        add("자리", -1, 1, `위 저항선 ${fmtPrice(r.price)}까지 ${dr.toFixed(1)}% 남았고, 아래 가까운 지지선은 잡히지 않았습니다.`);
+      } else {
+        add("자리", 1, 1, `아래 지지선 ${fmtPrice(sp.price)}까지 ${ds.toFixed(1)}% 남았고, 위 가까운 저항선은 잡히지 않았습니다.`);
+      }
+    }
+
+    // ③ RSI — 켜져 있을 때만 (계산은 언제든 가능하나 사용자가 안 보는 지표는 넣지 않는다)
+    if (showRSI && rsiLast != null) {
+      const v = rsiLast;
+      if (v >= 70) add("RSI", 1, 2, `${v.toFixed(1)}로 과매수 구간입니다. 오르는 힘은 세지만 짧게 보면 과열이라 되밀림이 잦은 자리이기도 합니다.`);
+      else if (v >= 50) add("RSI", 1, 2, `${v.toFixed(1)}로 중간선 50 위입니다. 오르는 쪽에 힘이 실려 있습니다.`);
+      else if (v > 30) add("RSI", -1, 2, `${v.toFixed(1)}로 중간선 50 아래입니다. 내리는 쪽에 힘이 실려 있습니다.`);
+      else add("RSI", -1, 2, `${v.toFixed(1)}로 과매도 구간입니다. 많이 내렸다는 뜻이지 반등이 보장된다는 뜻은 아닙니다.`);
+
+      if (lastRSI && lastRSI.div) {
+        const d = lastRSI.div;
+        add("다이버전스", d.cls === "bull" ? 1 : -1, 3,
+          `${d.label}가 잡혀 있습니다. ${d.desc}. 가격과 힘이 서로 다른 말을 하는 상태로, 흐름이 바뀔 수 있다는 이른 신호입니다. 다만 자주 어긋나므로 이것만 믿으면 안 됩니다.`);
+      }
+    }
+
+    // ④ 거래량 — 방향이 아니라 "지금 움직임에 힘이 실렸는가"의 신뢰도
+    if (mkt.volX != null) {
+      const x = mkt.volX;
+      add("거래량", 0, 0,
+        x >= 1.8 ? `20봉 평균의 ${x.toFixed(1)}배로 손바뀜이 크게 일어나고 있습니다. 지금 나오는 움직임에는 힘이 실려 있습니다.`
+        : x <= 0.6 ? `20봉 평균의 ${x.toFixed(1)}배로 한산합니다. 선을 뚫는 움직임이 나와도 힘이 실리지 않은 돌파일 수 있습니다.`
+        : `20봉 평균의 ${x.toFixed(1)}배로 평범한 수준입니다.`);
+    }
+
+    // ⑤ 선물 쏠림
+    if (mkt.funding) {
+      const f = mkt.funding.pct;
+      if (f >= 0.05) add("펀딩", -1, 1, `${f.toFixed(4)}%로 오를 것에 건 쪽이 과하게 몰려 있습니다. 쏠림이 심하면 작은 하락에도 강제 청산이 연쇄로 터질 수 있습니다.`);
+      else if (f <= -0.02) add("펀딩", 1, 1, `${f.toFixed(4)}%로 내릴 것에 건 쪽이 비용을 내고 있습니다. 숏이 몰린 상태에서는 반대로 튀어오르기도 합니다.`);
+      else add("펀딩", 0, 1, `${f.toFixed(4)}%로 한쪽 쏠림이 뚜렷하지 않습니다.`);
+    }
+
+    // ⑥ 심리
+    if (mkt.fng) {
+      const v = mkt.fng.value;
+      if (v >= 75) add("심리", -1, 1, `공포탐욕지수 ${v}(${mkt.fng.label})로 시장이 들떠 있습니다. 모두가 낙관할 때가 위험이 큰 구간이기도 합니다.`);
+      else if (v <= 25) add("심리", 1, 1, `공포탐욕지수 ${v}(${mkt.fng.label})로 시장이 위축돼 있습니다. 다만 공포가 극단으로 가도 가격은 더 내릴 수 있습니다.`);
+      else add("심리", 0, 1, `공포탐욕지수 ${v}(${mkt.fng.label})로 중립에 가깝습니다.`);
+    }
+
+    // ⑦ 국내 프리미엄
+    if (mkt.kimp) {
+      const k = mkt.kimp.pct;
+      if (k >= 3) add("김프", -1, 1, `${k.toFixed(2)}%로 국내가 해외보다 꽤 비쌉니다. 국내 매수세가 과열됐다는 뜻이고, 지금 국내에서 사면 그만큼 비싸게 사는 셈입니다.`);
+      else if (k <= -0.5) add("김프", 1, 1, `${k.toFixed(2)}%로 국내가 해외보다 쌉니다. 국내 관심이 식어 있는 상태입니다.`);
+      else add("김프", 0, 1, `${k.toFixed(2)}%로 해외와 큰 차이가 없습니다.`);
+    }
+
+    const score = sig.reduce((a, x) => a + x.dir * x.w, 0);
+    const maxW = sig.reduce((a, x) => a + x.w, 0);
+    return { sig, score, maxW, price, e21, e50 };
+  }
+
+  function digestVerdict(score) {
+    if (score >= 5) return ["bull", "강세 우위", "지표 대부분이 위쪽을 가리키고 있습니다"];
+    if (score >= 2) return ["bull", "약한 강세", "위쪽을 가리키는 지표가 조금 더 많습니다"];
+    if (score > -2) return ["flat", "혼조", "지표들이 서로 다른 말을 하고 있습니다"];
+    if (score > -5) return ["bear", "약한 약세", "아래쪽을 가리키는 지표가 조금 더 많습니다"];
+    return ["bear", "약세 우위", "지표 대부분이 아래쪽을 가리키고 있습니다"];
+  }
+
+  function showDigest() {
+    const panel = $("ai-panel");
+    const body = $("ai-body");
+    panel.style.display = "block";
+    panel.scrollTop = 0;
+    $("ai-src").textContent = `종합 정리 · ${coin.name} ${current.label}`;
+
+    const d = digestSignals();
+    if (!d) {
+      body.className = "";
+      body.textContent = "아직 분석할 캔들이 충분하지 않습니다. 차트가 불러와진 뒤 다시 눌러주세요.";
+      return;
+    }
+    const [cls, title, sub] = digestVerdict(d.score);
+    const esc = t => String(t).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+    let h = `<span class="vd ${cls}">${title}</span>`;
+    h += `<div>${esc(sub)}. 아래 ${d.sig.length}개 항목을 종합한 결과입니다. `
+       + `이 표시는 앞날의 예측이 아니라 지금 지표들이 얼마나 한쪽으로 모여 있는지를 나타냅니다.</div>`;
+
+    h += `<h4>항목별로 보면</h4>`;
+    d.sig.forEach(x => {
+      const ar = x.dir > 0 ? ["up", "▲"] : x.dir < 0 ? ["dn", "▼"] : ["nt", "•"];
+      h += `<div class="sig"><span class="ar ${ar[0]}">${ar[1]}</span>`
+         + `<span class="nm">${esc(x.nm)}</span><span class="tx">${esc(x.tx)}</span></div>`;
+    });
+
+    h += `<h4>지켜볼 숫자</h4><div class="tx">`;
+    const watch = [];
+    if (lastAnalysis && lastAnalysis.sup)
+      watch.push(`아래로 ${fmtPrice(lastAnalysis.sup.price)}이 깨지는지 (여기가 무너지면 흐름이 달라집니다)`);
+    if (lastAnalysis && lastAnalysis.res)
+      watch.push(`위로 ${fmtPrice(lastAnalysis.res.price)}을 거래량과 함께 넘는지`);
+    if (showRSI && rsiLast != null)
+      watch.push(`RSI가 중간선 50을 지키는지 (지금 ${rsiLast.toFixed(1)})`);
+    if (mkt.atr)
+      watch.push(`이 시간봉의 평균 변동폭은 ${fmtPrice(mkt.atr.abs)}, 약 ${mkt.atr.pct.toFixed(1)}%입니다. `
+        + `손절 폭을 이보다 좁게 잡으면 방향이 맞아도 흔들림에 먼저 털립니다`);
+    h += watch.length ? watch.map(t => `· ${esc(t)}`).join("<br>") : "아직 표시할 기준이 없습니다.";
+    h += `</div>`;
+
+    h += `<div class="note">지표는 서로 다른 말을 할 때가 더 많습니다. 그럴 때는 억지로 한 방향을 고르기보다 `
+       + `기다리는 것이 답인 경우가 많습니다. 특히 "혼조"로 나올 때가 그렇습니다.<br><br>`
+       + `자동 계산된 참고 자료이며 매수·매도 권유가 아닙니다. 투자 판단과 그 결과의 책임은 본인에게 있습니다.</div>`;
+
+    body.className = "rich";
+    body.innerHTML = h;
+  }
+
+  $("mkt").addEventListener("click", e => {
+    if (e.target.closest(".mhelp")) showMktGuide();
+    else showDigest();
+  });
+
 
   // 갱신 주기: 김프·펀딩은 자주, 심리지수는 하루 몇 번만 바뀌므로 느리게
   setInterval(() => refreshMkt("kimp"), 30000);
