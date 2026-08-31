@@ -2313,6 +2313,41 @@
         { time: div.A.time, value: div.rA },
         { time: div.B.time, value: div.rB },
       ]));
+
+      // 두 지점을 이은 기울기를 현재 봉까지 점선으로 연장한다.
+      // 형성 구간(실선)과 연장부(점선)를 나눠 그려야 "실제로 관측된 두 지점"과
+      // "그 기울기를 이어 본 것"이 눈으로 구분된다. 뒤엣것은 근거가 약하다.
+      const span = div.B.i - div.A.i;
+      if (span > 0) {
+        const lastI = bars.length - 1;
+        // 값이 유효 범위를 벗어나면 벗어나기 직전 봉에서 끊는다
+        const project = (v0, slope, lo, hi) => {
+          let endI = lastI;
+          for (let i = div.B.i + 1; i <= lastI; i++) {
+            const v = v0 + slope * (i - div.B.i);
+            if (v < lo || v > hi) { endI = i - 1; break; }
+          }
+          return { i: endI, v: v0 + slope * (endI - div.B.i) };
+        };
+        const mkExt = (c, v0, slope, lo, hi) => {
+          const e = project(v0, slope, lo, hi);
+          if (e.i <= div.B.i) return null;
+          const s = c.addLineSeries({
+            color, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted,
+            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            autoscaleInfoProvider: () => null,   // 연장선이 눈금을 늘리지 않도록
+          });
+          s.setData([
+            { time: bars[div.B.i].time, value: v0 },
+            { time: bars[e.i].time, value: e.v },
+          ]);
+          return s;
+        };
+        const pExt = mkExt(chart, div.B.price, (div.B.price - div.A.price) / span, 0, Infinity);
+        if (pExt) priceDivSeries.push(pExt);
+        const rExt = mkExt(rsiChart, div.rB, (div.rB - div.rA) / span, 0, 100);
+        if (rExt) rsiDivSeries.push(rExt);
+      }
     }
 
     // 최근 흐름까지 남겨 둔다 (AI 분석에 값 하나가 아니라 추이를 넘기기 위해)
